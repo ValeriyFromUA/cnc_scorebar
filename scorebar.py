@@ -392,74 +392,55 @@ def _rotated(path: QPainterPath, deg: float, cx: float, cy: float) -> QPainterPa
     return t.map(path)
 
 
-def _spread_bird_path(cx: float, cy: float, s: float) -> QPainterPath:
-    # Пташка з розставленими крилами (геральдичний орел), фронтально:
-    # плавні дуги крил (перо) + гострі виїмки між ними, маленька голова,
-    # вузьке тіло з хвостом.
-    path = QPainterPath()
-    path.moveTo(cx, cy - s * 0.85)
-    path.quadTo(cx + s * 0.25, cy - s * 0.78, cx + s * 0.35, cy - s * 0.55)
-    path.quadTo(cx + s * 0.75, cy - s * 0.62, cx + s * 1.05, cy - s * 0.42)
-    path.lineTo(cx + s * 0.55, cy - s * 0.22)
-    path.quadTo(cx + s * 0.95, cy - s * 0.05, cx + s * 1.2, cy + s * 0.18)
-    path.lineTo(cx + s * 0.5, cy + s * 0.08)
-    path.quadTo(cx + s * 0.3, cy + s * 0.25, cx + s * 0.22, cy + s * 0.55)
-    path.quadTo(cx + s * 0.12, cy + s * 0.72, cx, cy + s * 0.78)
-    path.quadTo(cx - s * 0.12, cy + s * 0.72, cx - s * 0.22, cy + s * 0.55)
-    path.quadTo(cx - s * 0.3, cy + s * 0.25, cx - s * 0.5, cy + s * 0.08)
-    path.lineTo(cx - s * 1.2, cy + s * 0.18)
-    path.quadTo(cx - s * 0.95, cy - s * 0.05, cx - s * 0.55, cy - s * 0.22)
-    path.lineTo(cx - s * 1.05, cy - s * 0.42)
-    path.quadTo(cx - s * 0.75, cy - s * 0.62, cx - s * 0.35, cy - s * 0.55)
-    path.quadTo(cx - s * 0.25, cy - s * 0.78, cx, cy - s * 0.85)
-    path.closeSubpath()
-    return path
+def _airplane_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # Авіація (USA Air Force) — стрімкий бойовий літак зверху: вузький
+    # загострений фюзеляж, стріловидні дельта-крила, маленьке хвостове
+    # оперення — силует винищувача, а не цивільного "хрестика".
+    fuselage = QPainterPath()
+    fuselage.moveTo(cx, cy - s * 1.15)
+    fuselage.lineTo(cx + s * 0.09, cy - s * 0.55)
+    fuselage.lineTo(cx + s * 0.09, cy + s * 0.85)
+    fuselage.lineTo(cx, cy + s * 1.05)
+    fuselage.lineTo(cx - s * 0.09, cy + s * 0.85)
+    fuselage.lineTo(cx - s * 0.09, cy - s * 0.55)
+    fuselage.closeSubpath()
+
+    wing_r = QPainterPath()
+    wing_r.moveTo(cx + s * 0.06, cy - s * 0.05)
+    wing_r.lineTo(cx + s * 1.1, cy + s * 0.62)
+    wing_r.lineTo(cx + s * 0.78, cy + s * 0.7)
+    wing_r.lineTo(cx + s * 0.08, cy + s * 0.32)
+    wing_r.closeSubpath()
+    wing_l = QPainterPath()
+    wing_l.moveTo(cx - s * 0.06, cy - s * 0.05)
+    wing_l.lineTo(cx - s * 1.1, cy + s * 0.62)
+    wing_l.lineTo(cx - s * 0.78, cy + s * 0.7)
+    wing_l.lineTo(cx - s * 0.08, cy + s * 0.32)
+    wing_l.closeSubpath()
+
+    tail_r = QPainterPath()
+    tail_r.moveTo(cx + s * 0.06, cy + s * 0.55)
+    tail_r.lineTo(cx + s * 0.42, cy + s * 0.95)
+    tail_r.lineTo(cx + s * 0.32, cy + s * 1.0)
+    tail_r.lineTo(cx + s * 0.07, cy + s * 0.78)
+    tail_r.closeSubpath()
+    tail_l = QPainterPath()
+    tail_l.moveTo(cx - s * 0.06, cy + s * 0.55)
+    tail_l.lineTo(cx - s * 0.42, cy + s * 0.95)
+    tail_l.lineTo(cx - s * 0.32, cy + s * 1.0)
+    tail_l.lineTo(cx - s * 0.07, cy + s * 0.78)
+    tail_l.closeSubpath()
+
+    return fuselage.united(wing_r).united(wing_l).united(tail_r).united(tail_l)
 
 
-def _eagle_path(cx: float, cy: float, s: float) -> QPainterPath:
-    # США (база) — щит, на фоні якого пташка з розставленими крилами.
-    shield = _shield_path(cx, cy, s * 1.6)
-    bird = _spread_bird_path(cx, cy, s * 0.6)
-    return shield.subtracted(bird)
-
-
-def _plane_path(cx: float, cy: float, s: float) -> QPainterPath:
-    # Авіація (USA Air Force) — силует "дельта" зверху.
-    p = QPainterPath()
-    p.moveTo(cx, cy - s)
-    p.lineTo(cx + s * 0.9, cy + s * 0.55)
-    p.lineTo(cx + s * 0.22, cy + s * 0.28)
-    p.lineTo(cx, cy + s * 0.85)
-    p.lineTo(cx - s * 0.22, cy + s * 0.28)
-    p.lineTo(cx - s * 0.9, cy + s * 0.55)
-    p.closeSubpath()
-    return p
-
-
-def _laser_beam_path(cx: float, cy: float, s: float) -> QPainterPath:
-    # Лазер (USA Laser General) — товстий лазерний промінь навскоси з джерелом.
-    beam = QPainterPath()
-    beam.moveTo(cx - s * 0.85, cy + s * 0.95)
-    beam.lineTo(cx - s * 0.25, cy + s * 0.45)
-    beam.lineTo(cx + s * 1.0, cy - s * 0.7)
-    beam.lineTo(cx + s * 0.5, cy - s * 1.0)
-    beam.lineTo(cx - s * 0.55, cy + s * 0.65)
-    beam.closeSubpath()
-    origin = QPainterPath()
-    origin.addEllipse(QRectF(cx - s * 1.05, cy + s * 0.55, s * 0.55, s * 0.55))
-    return beam.united(origin)
-
-
-def _bolt_path(cx: float, cy: float, s: float) -> QPainterPath:
-    bolt = QPainterPath()
-    bolt.moveTo(cx + s * 0.18, cy - s * 0.95)
-    bolt.lineTo(cx - s * 0.22, cy + s * 0.05)
-    bolt.lineTo(cx + s * 0.02, cy + s * 0.05)
-    bolt.lineTo(cx - s * 0.18, cy + s * 1.05)
-    bolt.lineTo(cx + s * 0.32, cy - s * 0.05)
-    bolt.lineTo(cx + s * 0.02, cy - s * 0.05)
-    bolt.closeSubpath()
-    return bolt
+def _emp_burst_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # Електронний (EMP) вибух (USA Superweapon General) — компактний
+    # зубчастий спалах-вибух з яскравим ядром, а не блискавка.
+    burst = _star_path(cx, cy, s * 1.0, s * 0.34, points=8)
+    core = QPainterPath()
+    core.addEllipse(QRectF(cx - s * 0.26, cy - s * 0.26, s * 0.52, s * 0.52))
+    return burst.united(core)
 
 
 def _star5_path(cx: float, cy: float, s: float) -> QPainterPath:
@@ -586,10 +567,10 @@ def _toxic_path(cx: float, cy: float, s: float) -> QPainterPath:
 
 # Кожному ключу під-фракції відповідає конкретний силует генерала.
 GLYPH_BUILDERS = {
-    "usa": _eagle_path,
-    "usa_air": _plane_path,
-    "usa_laser": _laser_beam_path,
-    "usa_super": None,  # малюється окремо: щит + білий патч-блискавка
+    "usa": None,  # малюється окремо: синій щит + жовтий напис "US"
+    "usa_air": None,  # малюється окремо: синє тло + жовтий літак
+    "usa_laser": None,  # малюється окремо: синій трикутник + червоний промінь
+    "usa_super": None,  # малюється окремо: синій щит + жовтий EMP-вибух
     "china": _star5_path,
     "china_inf": _ak_path,
     "china_tank": _tank_path,
@@ -610,6 +591,13 @@ GROUP_STYLE = {
 }
 
 _INK = QColor(32, 24, 16)
+
+# Уніфікована бойова палітра значків фракцій USA (щит/трикутник/коло +
+# золотий кант, як на медалях генералів CnC Generals: Zero Hour).
+_USA_NAVY = QColor("#13325E")
+_USA_GOLD = QColor("#D4AF37")
+_USA_GOLD_BRIGHT = QColor("#FFD700")
+_USA_RED = QColor("#C0392B")
 
 
 class FactionBadge(QWidget):
@@ -695,14 +683,91 @@ class FactionBadge(QWidget):
             painter.setBrush(_INK)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(QRectF(cx - 1.0, cy - 1.0, 2.0, 2.0))
-        elif self.faction.key == "usa_super":
+        elif self.faction.key == "usa":
+            # Бойовий щит: глибокий синій корпус, золотий кант (як на
+            # медалях генералів CnC), вибита золота абревіатура "US".
             shield = _shield_path(cx, cy, glyph_size * 1.6)
-            bolt = _bolt_path(cx, cy, glyph_size)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(_INK)
+            painter.setBrush(_USA_NAVY)
             painter.drawPath(shield)
-            painter.setBrush(QColor("#FFFFFF"))
-            painter.drawPath(bolt)
+            gold_pen = QPen(_USA_GOLD)
+            gold_pen.setWidthF(1.4)
+            painter.setPen(gold_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(shield)
+            font = QFont(self.theme.font_family.split(",")[0].strip())
+            font.setBold(True)
+            font.setPixelSize(max(int(glyph_size * 0.62), 6))
+            painter.setFont(font)
+            painter.setPen(_USA_GOLD_BRIGHT)
+            text_rect = QRectF(cx - glyph_size * 1.1, cy - glyph_size * 0.52, glyph_size * 2.2, glyph_size)
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, "US")
+            painter.setPen(QPen(_USA_GOLD, 1.0))
+            painter.drawLine(QPointF(cx - glyph_size * 0.4, cy + glyph_size * 0.42),
+                              QPointF(cx + glyph_size * 0.4, cy + glyph_size * 0.42))
+        elif self.faction.key == "usa_laser":
+            # Прямий лазер, що розширюється в трикутнику: синій корпус-
+            # обвід із золотим кантом, вузький промінь від вершини, що
+            # розкривається до широкого червоного "виходу" біля основи, і
+            # яскрава точка фокусування на вершині.
+            apex = (cx, cy - glyph_size * 1.05)
+            triangle = QPainterPath()
+            triangle.moveTo(*apex)
+            triangle.lineTo(cx + glyph_size * 0.95, cy + glyph_size * 0.85)
+            triangle.lineTo(cx - glyph_size * 0.95, cy + glyph_size * 0.85)
+            triangle.closeSubpath()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(_USA_NAVY)
+            painter.drawPath(triangle)
+            gold_pen = QPen(_USA_GOLD)
+            gold_pen.setWidthF(1.4)
+            painter.setPen(gold_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(triangle)
+            beam = QPainterPath()
+            beam.moveTo(*apex)
+            beam.lineTo(cx + glyph_size * 0.55, cy + glyph_size * 0.85)
+            beam.lineTo(cx - glyph_size * 0.55, cy + glyph_size * 0.85)
+            beam.closeSubpath()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(_USA_RED)
+            painter.drawPath(beam)
+            painter.setBrush(_USA_GOLD_BRIGHT)
+            painter.drawEllipse(QPointF(*apex), glyph_size * 0.12, glyph_size * 0.12)
+        elif self.faction.key == "usa_super":
+            # Щит + компактний жовтий EMP-вибух з червоним перегрітим ядром.
+            shield = _shield_path(cx, cy, glyph_size * 1.6)
+            burst = _emp_burst_path(cx, cy, glyph_size)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(_USA_NAVY)
+            painter.drawPath(shield)
+            gold_pen = QPen(_USA_GOLD)
+            gold_pen.setWidthF(1.4)
+            painter.setPen(gold_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(shield)
+            painter.setPen(QPen(_USA_NAVY, 0.8))
+            painter.setBrush(_USA_GOLD_BRIGHT)
+            painter.drawPath(burst)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(_USA_RED)
+            painter.drawEllipse(QPointF(cx, cy), glyph_size * 0.16, glyph_size * 0.16)
+        elif self.faction.key == "usa_air":
+            # Синє коло-тло з золотим кантом і силуетом винищувача.
+            bg_circle = QPainterPath()
+            bg_circle.addEllipse(QRectF(cx - inner_r, cy - inner_r, 2 * inner_r, 2 * inner_r))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(_USA_NAVY)
+            painter.drawPath(bg_circle)
+            gold_pen = QPen(_USA_GOLD)
+            gold_pen.setWidthF(1.4)
+            painter.setPen(gold_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(bg_circle)
+            plane = _airplane_path(cx, cy, glyph_size)
+            painter.setPen(QPen(_USA_NAVY, 0.8))
+            painter.setBrush(_USA_GOLD_BRIGHT)
+            painter.drawPath(plane)
         elif builder is not None:
             glyph = builder(cx, cy, glyph_size)
             painter.setPen(Qt.PenStyle.NoPen)
