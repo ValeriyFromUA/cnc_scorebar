@@ -80,16 +80,152 @@ class TacticalPanel(QFrame):
         path.closeSubpath()
         return path
 
+    def _panel_path(self, w: int, h: int, n: int) -> QPainterPath:
+        """Силует панелі залежно від theme.shape — щоб теми відрізнялись не
+        лише кольором, а й формою рамки."""
+        shape = self.theme.shape
+        path = QPainterPath()
+        if shape in ("brackets", "scanline"):
+            path.addRect(0, 0, w, h)
+        elif shape in ("carved", "glass"):
+            radius = max(n, 6)
+            path.addRoundedRect(0, 0, w, h, radius, radius)
+        elif shape == "brushed":
+            radius = max(n // 2, 3)
+            path.addRoundedRect(0, 0, w, h, radius, radius)
+        elif shape == "hexcut":
+            # "Візор": скошені верхні кути, прямокутні нижні.
+            path.moveTo(n, 0)
+            path.lineTo(w - n, 0)
+            path.lineTo(w, n)
+            path.lineTo(w, h)
+            path.lineTo(0, h)
+            path.lineTo(0, n)
+            path.closeSubpath()
+        elif shape == "diamond":
+            # Асиметричний "карбоновий" зріз: лише верхньо-лівий і
+            # нижньо-правий кути, два інші лишаються прямими.
+            path.moveTo(n, 0)
+            path.lineTo(w, 0)
+            path.lineTo(w, h - n)
+            path.lineTo(w - n, h)
+            path.lineTo(0, h)
+            path.lineTo(0, n)
+            path.closeSubpath()
+        else:  # "notch" — тактичний восьмикутник (CnC)
+            path = self._notch_path(n)
+        return path
+
+    def _draw_corner_brackets(self, painter: QPainter, w: int, h: int):
+        length = min(14, w // 6, h // 4)
+        if length < 4:
+            return
+        pen = QPen(parse_color(self.theme.accent))
+        pen.setWidthF(2.0)
+        painter.setPen(pen)
+        m = 3
+        for x0, y0, dx, dy in (
+            (m, m, 1, 1),
+            (w - m, m, -1, 1),
+            (m, h - m, 1, -1),
+            (w - m, h - m, -1, -1),
+        ):
+            painter.drawLine(QPointF(x0, y0), QPointF(x0 + dx * length, y0))
+            painter.drawLine(QPointF(x0, y0), QPointF(x0, y0 + dy * length))
+
+    def _draw_scanlines(self, painter: QPainter, w: int, h: int):
+        pen = QPen(parse_color(self.theme.border))
+        pen.setWidthF(1.0)
+        painter.save()
+        painter.setOpacity(0.10)
+        painter.setPen(pen)
+        y = 4
+        while y < h:
+            painter.drawLine(0, y, w, y)
+            y += 4
+        painter.restore()
+
+    def _draw_visor_seam(self, painter: QPainter, w: int, n: int):
+        pen = QPen(parse_color(self.theme.accent))
+        pen.setWidthF(1.0)
+        painter.save()
+        painter.setOpacity(0.55)
+        painter.setPen(pen)
+        painter.drawLine(n + 4, 4, w - n - 4, 4)
+        painter.restore()
+
+    def _draw_carbon_weave(self, painter: QPainter, path: QPainterPath, w: int, h: int):
+        painter.save()
+        painter.setClipPath(path)
+        pen = QPen(parse_color(self.theme.accent_secondary))
+        pen.setWidthF(1.0)
+        painter.setOpacity(0.16)
+        painter.setPen(pen)
+        x = -h
+        while x < w:
+            painter.drawLine(x, h, x + h, 0)
+            x += 6
+        painter.restore()
+
+    def _draw_glass_highlight(self, painter: QPainter, path: QPainterPath, w: int, h: int):
+        painter.save()
+        painter.setClipPath(path)
+        grad = QLinearGradient(0, 0, 0, h * 0.6)
+        grad.setColorAt(0.0, QColor(255, 255, 255, 90))
+        grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.fillRect(0, 0, w, int(h * 0.6), grad)
+        painter.restore()
+
+    def _draw_carved_inner_line(self, painter: QPainter, w: int, h: int, n: int):
+        inset = 4
+        inner = QPainterPath()
+        radius = max(n - 2, 2)
+        inner.addRoundedRect(inset, inset, w - 2 * inset, h - 2 * inset, radius, radius)
+        pen = QPen(parse_color(self.theme.accent_secondary))
+        pen.setWidthF(1.0)
+        painter.setPen(pen)
+        painter.drawPath(inner)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        n = min(self.theme.notch, self.width() // 4, self.height() // 4)
-        path = self._notch_path(max(n, 0))
+        w, h = self.width(), self.height()
+        n = max(min(self.theme.notch, w // 4, h // 4), 0)
+        shape = self.theme.shape
+        path = self._panel_path(w, h, n)
         bg_value = self.theme.bg if self.bg_key == "bg" else self.theme.bg_alt
-        painter.fillPath(path, parse_color(bg_value))
-        pen_color = parse_color(self.theme.border)
-        painter.setPen(pen_color)
+        base_color = parse_color(bg_value)
+
+        if shape == "brushed":
+            painter.save()
+            painter.setClipPath(path)
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0.0, QColor(base_color).darker(115))
+            grad.setColorAt(0.5, QColor(base_color).lighter(130))
+            grad.setColorAt(1.0, QColor(base_color).darker(115))
+            painter.fillRect(0, 0, w, h, grad)
+            painter.restore()
+        else:
+            painter.fillPath(path, base_color)
+
+        pen = QPen(parse_color(self.theme.border))
+        pen.setWidthF(1.2)
+        painter.setPen(pen)
         painter.drawPath(path)
+
+        if shape == "carved":
+            self._draw_carved_inner_line(painter, w, h, n)
+        elif shape in ("brackets", "scanline"):
+            self._draw_corner_brackets(painter, w, h)
+            if shape == "scanline":
+                self._draw_scanlines(painter, w, h)
+        elif shape == "hexcut":
+            self._draw_visor_seam(painter, w, n)
+        elif shape == "diamond":
+            self._draw_carbon_weave(painter, path, w, h)
+        elif shape == "glass":
+            self._draw_glass_highlight(painter, path, w, h)
+
         painter.end()
 
 

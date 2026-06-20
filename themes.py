@@ -28,6 +28,17 @@ class Theme:
     font_family: str
     notch: int           # розмір кутової засічки (px)
     corner_cut: int = 0  # додатковий зріз для "tactical" рамки
+    # Форма/стиль панелі — щоб теми відрізнялись не лише кольором, а й
+    # силуетом рамки та декоративними деталями (малюється в TacticalPanel):
+    #   "notch"     — восьмикутник із зрізаними кутами (тактичний HUD)
+    #   "brackets"  — прямокутник + кутові HUD-дужки (кіберпанк-приціл)
+    #   "hexcut"    — "візор" зі скошеними верхніми кутами + лінія шва
+    #   "carved"    — заокруглений прямокутник з різьбленою подвійною рамкою
+    #   "brushed"   — заокруглений прямокутник з вертикальним металевим градієнтом
+    #   "diamond"   — асиметрично зрізані протилежні кути + карбонове плетіння
+    #   "glass"     — сильно заокруглений прямокутник зі скляним відблиском
+    #   "scanline"  — прямокутник + HUD-дужки і горизонтальні скан-лінії
+    shape: str = "notch"
 
 
 THEMES: dict[str, Theme] = {
@@ -46,6 +57,7 @@ THEMES: dict[str, Theme] = {
         glow=False,
         font_family="Eurostile, Arial Narrow, Segoe UI, sans-serif",
         notch=14,
+        shape="notch",
     ),
     "neon": Theme(
         key="neon",
@@ -62,6 +74,7 @@ THEMES: dict[str, Theme] = {
         glow=True,
         font_family="Consolas, Orbitron, Segoe UI, sans-serif",
         notch=10,
+        shape="brackets",
     ),
     "crysis3": Theme(
         # Палітра відтворює нанокостюм-візор з Crysis (1/2/3 та Remastered
@@ -81,6 +94,7 @@ THEMES: dict[str, Theme] = {
         glow=True,
         font_family="Eurostile, Bank Gothic, Consolas, sans-serif",
         notch=10,
+        shape="hexcut",
     ),
     "witcher3": Theme(
         key="witcher3",
@@ -97,6 +111,7 @@ THEMES: dict[str, Theme] = {
         glow=False,
         font_family="Cinzel, Georgia, Times New Roman, serif",
         notch=8,
+        shape="carved",
     ),
     "metal": Theme(
         # Шліфована сталь: холодні сріблясто-сірі тони, без неонового сяйва —
@@ -115,6 +130,7 @@ THEMES: dict[str, Theme] = {
         glow=False,
         font_family="Segoe UI, Arial, sans-serif",
         notch=6,
+        shape="brushed",
     ),
     "carbon": Theme(
         # Карбонове волокно: глибокий матовий чорний + гоночний червоний
@@ -133,6 +149,7 @@ THEMES: dict[str, Theme] = {
         glow=False,
         font_family="Eurostile, Bank Gothic, Consolas, sans-serif",
         notch=8,
+        shape="diamond",
     ),
     "glass": Theme(
         # Скло / "frosted glass": світла напівпрозора панель у стилі
@@ -151,6 +168,7 @@ THEMES: dict[str, Theme] = {
         glow=True,
         font_family="Segoe UI, San Francisco, Helvetica Neue, sans-serif",
         notch=12,
+        shape="glass",
     ),
     "terminator": Theme(
         # Зір T-800: чорно-червоний бойовий HUD кіборга, моноширинний
@@ -169,6 +187,7 @@ THEMES: dict[str, Theme] = {
         glow=True,
         font_family="Consolas, Courier New, monospace",
         notch=6,
+        shape="scanline",
     ),
 }
 
