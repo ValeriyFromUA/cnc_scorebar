@@ -1,0 +1,856 @@
+"""Головний оверлей-скорбар: горизонтальна панель зверху по центру екрана,
+завжди над усіма вікнами. Тактичний HUD-стиль із кутовими засічками.
+
+Працює на Windows і macOS (на macOS прапор WindowStaysOnTopHint достатній
+для тестування; "топмост над fullscreen-DirectX грою" — особливість Windows,
+для якої нижче є best-effort фолбек через WinAPI).
+"""
+
+from __future__ import annotations
+
+import math
+import re
+import sys
+
+from PyQt6.QtCore import QRectF, Qt, QTimer, QPoint, QPointF
+from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QTransform
+from PyQt6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+)
+
+from data import Faction, FactionGroup, MatchState, Player, get_country, get_faction
+from themes import Theme, get_theme
+
+
+def parse_color(value: str) -> QColor:
+    """Підтримує "#RRGGBB" і "rgba(r, g, b, a)" (a у діапазоні 0-255)."""
+    if value.startswith("rgba"):
+        nums = [int(x) for x in re.findall(r"[\d.]+", value)]
+        r, g, b, a = nums[:4]
+        return QColor(r, g, b, a)
+    return QColor(value)
+
+
+# --------------------------------------------------------------------------
+# Базова панель з кутовими засічками (tactical notch frame)
+# --------------------------------------------------------------------------
+
+class TacticalPanel(QFrame):
+    def __init__(self, theme: Theme, bg_key: str = "bg", parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self.bg_key = bg_key
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        if theme.glow:
+            glow = QGraphicsDropShadowEffect(self)
+            glow.setColor(QColor(theme.border))
+            glow.setBlurRadius(18)
+            glow.setOffset(0, 0)
+            self.setGraphicsEffect(glow)
+
+    def set_theme(self, theme: Theme):
+        self.theme = theme
+        if theme.glow:
+            glow = QGraphicsDropShadowEffect(self)
+            glow.setColor(QColor(theme.border))
+            glow.setBlurRadius(18)
+            glow.setOffset(0, 0)
+            self.setGraphicsEffect(glow)
+        else:
+            self.setGraphicsEffect(None)
+        self.update()
+
+    def _notch_path(self, n: int) -> QPainterPath:
+        w, h = self.width(), self.height()
+        path = QPainterPath()
+        path.moveTo(n, 0)
+        path.lineTo(w - n, 0)
+        path.lineTo(w, n)
+        path.lineTo(w, h - n)
+        path.lineTo(w - n, h)
+        path.lineTo(n, h)
+        path.lineTo(0, h - n)
+        path.lineTo(0, n)
+        path.closeSubpath()
+        return path
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        n = min(self.theme.notch, self.width() // 4, self.height() // 4)
+        path = self._notch_path(max(n, 0))
+        bg_value = self.theme.bg if self.bg_key == "bg" else self.theme.bg_alt
+        painter.fillPath(path, parse_color(bg_value))
+        pen_color = parse_color(self.theme.border)
+        painter.setPen(pen_color)
+        painter.drawPath(path)
+        painter.end()
+
+
+# --------------------------------------------------------------------------
+# Іконка фракції — кругла "канатна" медаль як у генералів CnC Generals:
+# Зеро Хаур (синя рамка = USA, червона = China, фіолетова = GLA),
+# пісочне тло і чорний силует юніта/спецзагону, стилізована під тему.
+# --------------------------------------------------------------------------
+
+def _star_path(cx: float, cy: float, outer_r: float, inner_r: float, points: int = 5) -> QPainterPath:
+    path = QPainterPath()
+    step = math.pi / points
+    rot = -math.pi / 2
+    for i in range(points * 2):
+        r = outer_r if i % 2 == 0 else inner_r
+        angle = rot + i * step
+        x, y = cx + r * math.cos(angle), cy + r * math.sin(angle)
+        path.moveTo(x, y) if i == 0 else path.lineTo(x, y)
+    path.closeSubpath()
+    return path
+
+
+def _shield_path(cx: float, cy: float, size: float) -> QPainterPath:
+    w, h = size * 0.95, size * 1.2
+    path = QPainterPath()
+    path.moveTo(cx - w / 2, cy - h / 2)
+    path.lineTo(cx + w / 2, cy - h / 2)
+    path.lineTo(cx + w / 2, cy)
+    path.quadTo(cx + w / 2, cy + h / 2, cx, cy + h / 2)
+    path.quadTo(cx - w / 2, cy + h / 2, cx - w / 2, cy)
+    path.closeSubpath()
+    return path
+
+
+def _crescent_path(cx: float, cy: float, r: float) -> QPainterPath:
+    outer = QPainterPath()
+    outer.addEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+    inner_r = r * 0.78
+    offset = r * 0.5
+    inner = QPainterPath()
+    inner.addEllipse(QRectF(cx - inner_r + offset, cy - inner_r, 2 * inner_r, 2 * inner_r))
+    return outer.subtracted(inner)
+
+
+def _rotated(path: QPainterPath, deg: float, cx: float, cy: float) -> QPainterPath:
+    t = QTransform()
+    t.translate(cx, cy)
+    t.rotate(deg)
+    t.translate(-cx, -cy)
+    return t.map(path)
+
+
+def _spread_bird_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # Пташка з розставленими крилами (геральдичний орел), фронтально:
+    # плавні дуги крил (перо) + гострі виїмки між ними, маленька голова,
+    # вузьке тіло з хвостом.
+    path = QPainterPath()
+    path.moveTo(cx, cy - s * 0.85)
+    path.quadTo(cx + s * 0.25, cy - s * 0.78, cx + s * 0.35, cy - s * 0.55)
+    path.quadTo(cx + s * 0.75, cy - s * 0.62, cx + s * 1.05, cy - s * 0.42)
+    path.lineTo(cx + s * 0.55, cy - s * 0.22)
+    path.quadTo(cx + s * 0.95, cy - s * 0.05, cx + s * 1.2, cy + s * 0.18)
+    path.lineTo(cx + s * 0.5, cy + s * 0.08)
+    path.quadTo(cx + s * 0.3, cy + s * 0.25, cx + s * 0.22, cy + s * 0.55)
+    path.quadTo(cx + s * 0.12, cy + s * 0.72, cx, cy + s * 0.78)
+    path.quadTo(cx - s * 0.12, cy + s * 0.72, cx - s * 0.22, cy + s * 0.55)
+    path.quadTo(cx - s * 0.3, cy + s * 0.25, cx - s * 0.5, cy + s * 0.08)
+    path.lineTo(cx - s * 1.2, cy + s * 0.18)
+    path.quadTo(cx - s * 0.95, cy - s * 0.05, cx - s * 0.55, cy - s * 0.22)
+    path.lineTo(cx - s * 1.05, cy - s * 0.42)
+    path.quadTo(cx - s * 0.75, cy - s * 0.62, cx - s * 0.35, cy - s * 0.55)
+    path.quadTo(cx - s * 0.25, cy - s * 0.78, cx, cy - s * 0.85)
+    path.closeSubpath()
+    return path
+
+
+def _eagle_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # США (база) — щит, на фоні якого пташка з розставленими крилами.
+    shield = _shield_path(cx, cy, s * 1.6)
+    bird = _spread_bird_path(cx, cy, s * 0.6)
+    return shield.subtracted(bird)
+
+
+def _plane_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # Авіація (USA Air Force) — силует "дельта" зверху.
+    p = QPainterPath()
+    p.moveTo(cx, cy - s)
+    p.lineTo(cx + s * 0.9, cy + s * 0.55)
+    p.lineTo(cx + s * 0.22, cy + s * 0.28)
+    p.lineTo(cx, cy + s * 0.85)
+    p.lineTo(cx - s * 0.22, cy + s * 0.28)
+    p.lineTo(cx - s * 0.9, cy + s * 0.55)
+    p.closeSubpath()
+    return p
+
+
+def _laser_beam_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # Лазер (USA Laser General) — товстий лазерний промінь навскоси з джерелом.
+    beam = QPainterPath()
+    beam.moveTo(cx - s * 0.85, cy + s * 0.95)
+    beam.lineTo(cx - s * 0.25, cy + s * 0.45)
+    beam.lineTo(cx + s * 1.0, cy - s * 0.7)
+    beam.lineTo(cx + s * 0.5, cy - s * 1.0)
+    beam.lineTo(cx - s * 0.55, cy + s * 0.65)
+    beam.closeSubpath()
+    origin = QPainterPath()
+    origin.addEllipse(QRectF(cx - s * 1.05, cy + s * 0.55, s * 0.55, s * 0.55))
+    return beam.united(origin)
+
+
+def _bolt_path(cx: float, cy: float, s: float) -> QPainterPath:
+    bolt = QPainterPath()
+    bolt.moveTo(cx + s * 0.18, cy - s * 0.95)
+    bolt.lineTo(cx - s * 0.22, cy + s * 0.05)
+    bolt.lineTo(cx + s * 0.02, cy + s * 0.05)
+    bolt.lineTo(cx - s * 0.18, cy + s * 1.05)
+    bolt.lineTo(cx + s * 0.32, cy - s * 0.05)
+    bolt.lineTo(cx + s * 0.02, cy - s * 0.05)
+    bolt.closeSubpath()
+    return bolt
+
+
+def _star5_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # Китай (база) — комуністична п'ятикутна зірка.
+    return _star_path(cx, cy, s, s * 0.42)
+
+
+def _ak_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # Піхота (China Infantry General) — силует АК-47: ствол, приклад,
+    # пістолетна рукоятка і впізнаваний вигнутий "банановий" магазин.
+    receiver = QPainterPath()
+    receiver.addRoundedRect(QRectF(cx - s * 1.05, cy - s * 0.16, s * 1.6, s * 0.24), s * 0.05, s * 0.05)
+    stock = QPainterPath()
+    stock.addRoundedRect(QRectF(cx + s * 0.5, cy - s * 0.1, s * 0.5, s * 0.26), s * 0.05, s * 0.05)
+    grip = QPainterPath()
+    grip.addRoundedRect(QRectF(cx + s * 0.08, cy + s * 0.06, s * 0.22, s * 0.5), s * 0.05, s * 0.05)
+    grip = _rotated(grip, 18, cx + s * 0.19, cy + s * 0.06)
+    mag = QPainterPath()
+    mag.moveTo(cx - s * 0.32, cy + s * 0.08)
+    mag.cubicTo(cx - s * 0.18, cy + s * 0.55, cx - s * 0.55, cy + s * 1.0, cx - s * 0.8, cy + s * 1.15)
+    mag.lineTo(cx - s * 0.58, cy + s * 1.2)
+    mag.cubicTo(cx - s * 0.42, cy + s * 0.75, cx - s * 0.08, cy + s * 0.38, cx - s * 0.02, cy + s * 0.1)
+    mag.closeSubpath()
+    combined = receiver.united(stock).united(grip).united(mag)
+    return _rotated(combined, -16, cx, cy)
+
+
+def _tank_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # Танки (China Tank General) — силует танка з гарматою.
+    body = QPainterPath()
+    body.addRoundedRect(QRectF(cx - s * 0.85, cy + s * 0.05, s * 1.7, s * 0.5), s * 0.1, s * 0.1)
+    turret = QPainterPath()
+    turret.addEllipse(QRectF(cx - s * 0.4, cy - s * 0.45, s * 0.8, s * 0.55))
+    barrel = QPainterPath()
+    barrel.addRoundedRect(QRectF(cx + s * 0.05, cy - s * 0.3, s * 0.85, s * 0.16), s * 0.04, s * 0.04)
+    return body.united(turret).united(barrel)
+
+
+def _wedge_path(cx: float, cy: float, r1: float, r2: float, start_deg: float, sweep_deg: float) -> QPainterPath:
+    path = QPainterPath()
+    outer = QRectF(cx - r2, cy - r2, 2 * r2, 2 * r2)
+    inner = QRectF(cx - r1, cy - r1, 2 * r1, 2 * r1)
+    path.arcMoveTo(outer, start_deg)
+    path.arcTo(outer, start_deg, sweep_deg)
+    path.arcTo(inner, start_deg + sweep_deg, -sweep_deg)
+    path.closeSubpath()
+    return path
+
+
+def _radiation_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # Ядерна зброя (China Nuke General) — знак радіації.
+    combined = QPainterPath()
+    combined.addEllipse(QRectF(cx - s * 0.22, cy - s * 0.22, s * 0.44, s * 0.44))
+    for i in range(3):
+        combined.addPath(_wedge_path(cx, cy, s * 0.34, s * 0.95, -90 + i * 120 - 25, 50))
+    return combined
+
+
+def _dagger_blade_path(cx: float, cy: float, length: float, angle_deg: float) -> QPainterPath:
+    # Тонке лезо кинджала (ромб з гострим вістрям і потовщеним середником).
+    blade = QPainterPath()
+    blade.moveTo(cx, cy - length * 0.5)
+    blade.lineTo(cx + length * 0.1, cy + length * 0.18)
+    blade.lineTo(cx + length * 0.05, cy + length * 0.5)
+    blade.lineTo(cx - length * 0.05, cy + length * 0.5)
+    blade.lineTo(cx - length * 0.1, cy + length * 0.18)
+    blade.closeSubpath()
+    return _rotated(blade, angle_deg, cx, cy)
+
+
+def _crescent_daggers_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # GLA (база) — два кинджали навхрест на фоні великого півмісяця (роги вниз).
+    moon_r = s * 0.95
+    outer = QPainterPath()
+    outer.addEllipse(QRectF(cx - moon_r, cy - moon_r, 2 * moon_r, 2 * moon_r))
+    inner_r = moon_r * 0.78
+    inner = QPainterPath()
+    inner.addEllipse(QRectF(cx - inner_r, cy - inner_r - moon_r * 0.5, 2 * inner_r, 2 * inner_r))
+    crescent = outer.subtracted(inner)
+    crescent = _rotated(crescent, 90, cx, cy)
+
+    d1 = _dagger_blade_path(cx, cy, s * 1.7, 45)
+    d2 = _dagger_blade_path(cx, cy, s * 1.7, -45)
+    return crescent.united(d1).united(d2)
+
+
+def _dynamite_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # Підрив (GLA Demolition General) — одна велика динамітна шашка з ґнотом.
+    stick = QPainterPath()
+    stick.addRoundedRect(QRectF(cx - s * 0.4, cy - s * 0.85, s * 0.8, s * 1.65), s * 0.14, s * 0.14)
+    fuse = QPainterPath()
+    fuse.addRoundedRect(QRectF(cx - s * 0.07, cy - s * 1.25, s * 0.14, s * 0.45), s * 0.04, s * 0.04)
+    fuse = _rotated(fuse, 25, cx, cy - s * 0.85)
+    return stick.united(fuse)
+
+
+def _bone_path(cx: float, cy: float, length: float, angle_deg: float) -> QPainterPath:
+    bar = QPainterPath()
+    bar.addRoundedRect(QRectF(cx - length / 2, cy - length * 0.08, length, length * 0.16), length * 0.08, length * 0.08)
+    knob1 = QPainterPath()
+    knob1.addEllipse(QRectF(cx - length / 2 - length * 0.09, cy - length * 0.16, length * 0.24, length * 0.24))
+    knob2 = QPainterPath()
+    knob2.addEllipse(QRectF(cx + length / 2 - length * 0.15, cy - length * 0.16, length * 0.24, length * 0.24))
+    combined = bar.united(knob1).united(knob2)
+    return _rotated(combined, angle_deg, cx, cy)
+
+
+def _toxic_path(cx: float, cy: float, s: float) -> QPainterPath:
+    # Токсини (GLA Toxin General) — череп зі схрещеними кістками.
+    skull = QPainterPath()
+    skull.addEllipse(QRectF(cx - s * 0.55, cy - s * 0.85, s * 1.1, s * 0.95))
+    jaw = QPainterPath()
+    jaw.addRoundedRect(QRectF(cx - s * 0.3, cy - s * 0.15, s * 0.6, s * 0.3), s * 0.06, s * 0.06)
+    skull = skull.united(jaw)
+    eye1 = QPainterPath()
+    eye1.addEllipse(QRectF(cx - s * 0.34, cy - s * 0.6, s * 0.24, s * 0.28))
+    eye2 = QPainterPath()
+    eye2.addEllipse(QRectF(cx + s * 0.1, cy - s * 0.6, s * 0.24, s * 0.28))
+    skull = skull.subtracted(eye1).subtracted(eye2)
+    b1 = _bone_path(cx, cy + s * 0.55, s * 1.3, 35)
+    b2 = _bone_path(cx, cy + s * 0.55, s * 1.3, -35)
+    return skull.united(b1).united(b2)
+
+
+# Кожному ключу під-фракції відповідає конкретний силует генерала.
+GLYPH_BUILDERS = {
+    "usa": _eagle_path,
+    "usa_air": _plane_path,
+    "usa_laser": _laser_beam_path,
+    "usa_super": None,  # малюється окремо: щит + білий патч-блискавка
+    "china": _star5_path,
+    "china_inf": _ak_path,
+    "china_tank": _tank_path,
+    "china_nuke": _radiation_path,
+    "gla": _crescent_daggers_path,
+    "gla_demo": _dynamite_path,
+    "gla_stealth": None,  # малюється окремо: приціл/перехрестя
+    "gla_toxin": _toxic_path,
+}
+
+# Двоколірна гама медалі за групою фракції: Китай — червоний+золотий,
+# США — синій+білий, GLA — зелений+жовтий (зовнішнє кільце / акцентне
+# кільце / тло-підкладка).
+GROUP_STYLE = {
+    FactionGroup.USA: ("#1C4F9C", "#FFFFFF", "#E7EFFB"),
+    FactionGroup.CHINA: ("#B23A2E", "#D4AF37", "#F6E6B8"),
+    FactionGroup.GLA: ("#3F6B2B", "#D4C13B", "#ECE7A8"),
+}
+
+_INK = QColor(32, 24, 16)
+
+
+class FactionBadge(QWidget):
+    """Кругла медаль-значок фракції/генерала у стилі іконок генералів
+    CnC Generals: кільце кольору групи (USA синьо-білий, China червоно-
+    золотий, GLA зелено-жовтий) і чорний силует конкретного юніта.
+    """
+
+    def __init__(self, theme: Theme, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self.faction: Faction | None = None
+        self.setFixedSize(32, 32)
+
+    def set_theme(self, theme: Theme):
+        self.theme = theme
+        self.update()
+
+    def set_faction(self, faction: Faction):
+        self.faction = faction
+        self.setToolTip(faction.name)
+        self.update()
+
+    def paintEvent(self, event):
+        if not self.faction:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = float(self.width()), float(self.height())
+        cx, cy = w / 2, h / 2
+        r = min(w, h) / 2 - 0.5
+
+        ring_hex, trim_hex, fill_hex = GROUP_STYLE.get(self.faction.group, GROUP_STYLE[FactionGroup.USA])
+        ring_color = QColor(ring_hex)
+
+        outer = QPainterPath()
+        outer.addEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+        trim = QPainterPath()
+        trim_r = r * 0.84
+        trim.addEllipse(QRectF(cx - trim_r, cy - trim_r, 2 * trim_r, 2 * trim_r))
+        inner = QPainterPath()
+        inner_r = r * 0.7
+        inner.addEllipse(QRectF(cx - inner_r, cy - inner_r, 2 * inner_r, 2 * inner_r))
+
+        if self.theme.key in ("metal", "carbon"):
+            grad = QLinearGradient(0, cy - r, 0, cy + r)
+            grad.setColorAt(0.0, ring_color.lighter(140))
+            grad.setColorAt(0.6, ring_color)
+            grad.setColorAt(1.0, ring_color.darker(150))
+            painter.fillPath(outer, grad)
+        else:
+            painter.fillPath(outer, ring_color)
+
+        painter.fillPath(trim, QColor(trim_hex))
+
+        fill_color = QColor(fill_hex)
+        if self.theme.key == "glass":
+            fill_color.setAlpha(215)
+        painter.fillPath(inner, fill_color)
+
+        border_pen = QPen(parse_color(self.theme.border))
+        border_pen.setWidthF(1.1)
+        painter.setPen(border_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(outer)
+
+        if self.theme.glow:
+            glow_pen = QPen(parse_color(self.theme.accent))
+            glow_pen.setWidthF(0.8)
+            painter.setPen(glow_pen)
+            painter.drawEllipse(QRectF(cx - r - 0.6, cy - r - 0.6, 2 * (r + 0.6), 2 * (r + 0.6)))
+
+        builder = GLYPH_BUILDERS.get(self.faction.key)
+        glyph_size = inner_r * 0.88
+        if self.faction.key == "gla_stealth":
+            painter.setPen(QPen(_INK, 1.4))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            for ring_r in (glyph_size * 0.45, glyph_size * 0.85):
+                painter.drawEllipse(QRectF(cx - ring_r, cy - ring_r, 2 * ring_r, 2 * ring_r))
+            cross = glyph_size * 1.25
+            painter.drawLine(QPointF(cx - cross, cy), QPointF(cx + cross, cy))
+            painter.drawLine(QPointF(cx, cy - cross), QPointF(cx, cy + cross))
+            painter.setBrush(_INK)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QRectF(cx - 1.0, cy - 1.0, 2.0, 2.0))
+        elif self.faction.key == "usa_super":
+            shield = _shield_path(cx, cy, glyph_size * 1.6)
+            bolt = _bolt_path(cx, cy, glyph_size)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(_INK)
+            painter.drawPath(shield)
+            painter.setBrush(QColor("#FFFFFF"))
+            painter.drawPath(bolt)
+        elif builder is not None:
+            glyph = builder(cx, cy, glyph_size)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(_INK)
+            painter.drawPath(glyph)
+        painter.end()
+
+
+# --------------------------------------------------------------------------
+# Рядок гравця
+# --------------------------------------------------------------------------
+
+class PlayerRow(QWidget):
+    def __init__(self, theme: Theme, show_rank: bool = False, show_score: bool = False, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self.show_rank = show_rank
+        self.show_score = show_score
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(6)
+
+        self.rank_label = QLabel("")
+        self.rank_label.setFixedWidth(16)
+        self.flag_label = QLabel("")
+        self.name_label = QLabel("Player")
+        self.badge = FactionBadge(theme)
+        self.score_label = QLabel("0")
+        self.score_label.setFixedWidth(28)
+        self.score_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        if show_rank:
+            layout.addWidget(self.rank_label)
+        layout.addWidget(self.flag_label)
+        layout.addWidget(self.name_label, 1)
+        layout.addWidget(self.badge)
+        if show_score:
+            layout.addWidget(self.score_label)
+
+        self._apply_fonts()
+
+    def _apply_fonts(self):
+        flag_font = QFont(self.theme.font_family.split(",")[0].strip())
+        flag_font.setPointSize(13)
+        self.flag_label.setFont(flag_font)
+
+        name_font = QFont(self.theme.font_family.split(",")[0].strip())
+        name_font.setPointSize(11)
+        name_font.setBold(True)
+        self.name_label.setFont(name_font)
+        self.name_label.setStyleSheet(f"color: {self.theme.text_primary}; background: transparent;")
+
+        rank_font = QFont(name_font)
+        rank_font.setBold(False)
+        self.rank_label.setFont(rank_font)
+        self.rank_label.setStyleSheet(f"color: {self.theme.text_secondary}; background: transparent;")
+
+        self.score_label.setFont(name_font)
+        self.score_label.setStyleSheet(f"color: {self.theme.accent}; background: transparent;")
+
+    def set_theme(self, theme: Theme):
+        self.theme = theme
+        self._apply_fonts()
+        self.badge.set_theme(theme)
+        self.update_player(self._last_player, self._last_rank)
+
+    _last_player: Player | None = None
+    _last_rank: int | None = None
+
+    def update_player(self, player: Player, rank: int | None = None):
+        self._last_player = player
+        self._last_rank = rank
+        country = get_country(player.country_code)
+        faction = get_faction(player.faction_key)
+
+        self.flag_label.setText(country.flag)
+        self.name_label.setText(player.name or "—")
+        self.badge.set_faction(faction)
+        if self.show_score:
+            self.score_label.setText(str(player.score))
+        if self.show_rank:
+            self.rank_label.setText(f"{rank}." if rank else "")
+
+
+# --------------------------------------------------------------------------
+# Командна панель (список гравців однієї сторони)
+# --------------------------------------------------------------------------
+
+class TeamPanel(TacticalPanel):
+    def __init__(self, theme: Theme, side: str, parent=None):
+        super().__init__(theme, bg_key="bg", parent=parent)
+        self.side = side  # "left" / "right"
+        self.rows: list[PlayerRow] = []
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(theme.notch + 4, 6, theme.notch + 4, 6)
+        outer.setSpacing(2)
+        self.rows_layout = QVBoxLayout()
+        self.rows_layout.setSpacing(2)
+        outer.addLayout(self.rows_layout)
+
+    def set_theme(self, theme: Theme):
+        super().set_theme(theme)
+        self.layout().setContentsMargins(theme.notch + 4, 6, theme.notch + 4, 6)
+        for row in self.rows:
+            row.set_theme(theme)
+
+    def set_size(self, n: int):
+        while len(self.rows) < n:
+            row = PlayerRow(self.theme, show_rank=False, show_score=False)
+            self.rows.append(row)
+            self.rows_layout.addWidget(row)
+        while len(self.rows) > n:
+            row = self.rows.pop()
+            self.rows_layout.removeWidget(row)
+            row.deleteLater()
+
+    def update_players(self, players: list[Player]):
+        self.set_size(len(players))
+        for row, player in zip(self.rows, players):
+            row.update_player(player)
+
+
+# --------------------------------------------------------------------------
+# Центральна панель з рахунком
+# --------------------------------------------------------------------------
+
+class CenterScorePanel(TacticalPanel):
+    def __init__(self, theme: Theme, parent=None):
+        super().__init__(theme, bg_key="bg_alt", parent=parent)
+        self.setMinimumWidth(150)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(theme.notch + 8, 6, theme.notch + 8, 6)
+        layout.setSpacing(0)
+
+        self.mode_label = QLabel("1v1")
+        self.mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.score_label = QLabel("0 : 0")
+        self.score_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.map_label = QLabel("")
+        self.map_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout.addWidget(self.mode_label)
+        layout.addWidget(self.score_label)
+        layout.addWidget(self.map_label)
+
+        self._apply_fonts()
+
+    def _apply_fonts(self):
+        family = self.theme.font_family.split(",")[0].strip()
+
+        mode_font = QFont(family)
+        mode_font.setPointSize(9)
+        self.mode_label.setFont(mode_font)
+        self.mode_label.setStyleSheet(f"color: {self.theme.text_secondary}; background: transparent;")
+
+        score_font = QFont(family)
+        score_font.setPointSize(20)
+        score_font.setBold(True)
+        self.score_label.setFont(score_font)
+        self.score_label.setStyleSheet(f"color: {self.theme.accent}; background: transparent;")
+
+        map_font = QFont(family)
+        map_font.setPointSize(8)
+        self.map_label.setFont(map_font)
+        self.map_label.setStyleSheet(f"color: {self.theme.text_secondary}; background: transparent;")
+
+    def set_theme(self, theme: Theme):
+        super().set_theme(theme)
+        self._apply_fonts()
+
+    def update_state(self, state: MatchState):
+        self.mode_label.setText(state.mode_label)
+        self.score_label.setText(f"{state.score_a} : {state.score_b}")
+        self.map_label.setText(state.map_name)
+
+
+# --------------------------------------------------------------------------
+# FFA панель
+# --------------------------------------------------------------------------
+
+class FFAPanel(TacticalPanel):
+    def __init__(self, theme: Theme, parent=None):
+        super().__init__(theme, bg_key="bg", parent=parent)
+        self.rows: list[PlayerRow] = []
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(theme.notch + 4, 6, theme.notch + 4, 6)
+        outer.setSpacing(2)
+        self.rows_layout = QVBoxLayout()
+        self.rows_layout.setSpacing(2)
+        outer.addLayout(self.rows_layout)
+
+    def set_theme(self, theme: Theme):
+        super().set_theme(theme)
+        self.layout().setContentsMargins(theme.notch + 4, 6, theme.notch + 4, 6)
+        for row in self.rows:
+            row.set_theme(theme)
+
+    def set_size(self, n: int):
+        while len(self.rows) < n:
+            row = PlayerRow(self.theme, show_rank=True, show_score=True)
+            self.rows.append(row)
+            self.rows_layout.addWidget(row)
+        while len(self.rows) > n:
+            row = self.rows.pop()
+            self.rows_layout.removeWidget(row)
+            row.deleteLater()
+
+    def update_players(self, players: list[Player]):
+        ordered = sorted(players, key=lambda p: p.score, reverse=True)
+        self.set_size(len(ordered))
+        for i, (row, player) in enumerate(zip(self.rows, ordered), start=1):
+            row.update_player(player, rank=i)
+
+
+# --------------------------------------------------------------------------
+# Заголовок
+# --------------------------------------------------------------------------
+
+class TitleLabel(QLabel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedHeight(36)
+        self._title = "SCOREBAR"
+        self.setText(self._title)
+
+    def set_title(self, title: str):
+        self._title = title or "SCOREBAR"
+        self.setText(self._title)
+
+    def set_theme(self, theme: Theme):
+        self.setStyleSheet(
+            f"color: {theme.accent}; background: transparent; "
+            f"font-weight: bold; letter-spacing: 2px;"
+        )
+
+
+# --------------------------------------------------------------------------
+# Головне вікно оверлею
+# --------------------------------------------------------------------------
+
+class ScorebarWindow(QWidget):
+    def __init__(self, theme_key: str = "cnc"):
+        super().__init__()
+        self.theme = get_theme(theme_key)
+        self.state = MatchState(ffa=False, team_size=1, players=[Player(team=0), Player(team=1)])
+        self.position_key = "top_center"
+
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        # На macOS вікна з прапором Qt.WindowType.Tool за умовчанням ховаються,
+        # коли застосунок втрачає активність (тобто при перемиканні на іншу
+        # гру/вікно) — цей атрибут вимикає таку поведінку.
+        self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
+        # Оверлей ніколи не повинен перехоплювати клавіатуру — з нею працює
+        # лише панель керування.
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.row_widget = QWidget()
+        self.row_layout = QHBoxLayout(self.row_widget)
+        self.row_layout.setContentsMargins(0, 0, 0, 0)
+        self.row_layout.setSpacing(4)
+        root.addWidget(self.row_widget)
+
+        self.title_label = TitleLabel()
+        root.addWidget(self.title_label)
+
+        self.left_panel = TeamPanel(self.theme, "left")
+        self.center_panel = CenterScorePanel(self.theme)
+        self.right_panel = TeamPanel(self.theme, "right")
+        self.ffa_panel = FFAPanel(self.theme)
+
+        self.row_layout.addWidget(self.left_panel)
+        self.row_layout.addWidget(self.center_panel)
+        self.row_layout.addWidget(self.right_panel)
+        self.row_layout.addWidget(self.ffa_panel)
+
+        self.title_label.set_theme(self.theme)
+        self.refresh()
+
+        # Windows: best-effort, повторно встановлюємо topmost через WinAPI,
+        # бо повноекранні DirectX-гри інколи "відбирають" topmost. На інших
+        # платформах НЕ робимо періодичний self.raise_() — він перехоплює
+        # фокус клавіатури і блокує введення в панелі керування; там
+        # WindowStaysOnTopHint (вище) сам тримає вікно нагорі без активації.
+        if sys.platform.startswith("win"):
+            self._topmost_timer = QTimer(self)
+            self._topmost_timer.timeout.connect(self._reassert_topmost_windows)
+            self._topmost_timer.start(2000)
+
+    # ------------------------------------------------------------------
+    def _reassert_topmost_windows(self):
+        try:
+            import ctypes
+
+            hwnd = int(self.winId())
+            HWND_TOPMOST = -1
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOACTIVATE = 0x0010
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+            )
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    def set_match(self, state: MatchState):
+        self.state = state
+        self.refresh()
+
+    def set_theme(self, theme_key: str):
+        self.theme = get_theme(theme_key)
+        self.left_panel.set_theme(self.theme)
+        self.right_panel.set_theme(self.theme)
+        self.center_panel.set_theme(self.theme)
+        self.ffa_panel.set_theme(self.theme)
+        self.title_label.set_theme(self.theme)
+        self.refresh()
+
+    def set_title(self, title: str):
+        self.title_label.set_title(title)
+        self.adjustSize()
+        self.reposition()
+
+    def increment_score(self, side: str, delta: int = 1):
+        if side == "a":
+            self.state.score_a = max(0, self.state.score_a + delta)
+        elif side == "b":
+            self.state.score_b = max(0, self.state.score_b + delta)
+        self.center_panel.update_state(self.state)
+
+    def increment_player_score(self, index: int, delta: int = 1):
+        if 0 <= index < len(self.state.players):
+            self.state.players[index].score = max(0, self.state.players[index].score + delta)
+            self.refresh()
+
+    def refresh(self):
+        ffa = self.state.ffa
+        self.left_panel.setVisible(not ffa)
+        self.center_panel.setVisible(not ffa)
+        self.right_panel.setVisible(not ffa)
+        self.ffa_panel.setVisible(ffa)
+
+        if ffa:
+            self.ffa_panel.update_players(self.state.players)
+        else:
+            team_a = [p for p in self.state.players if p.team == 0]
+            team_b = [p for p in self.state.players if p.team == 1]
+            self.left_panel.update_players(team_a)
+            self.right_panel.update_players(team_b)
+            self.center_panel.update_state(self.state)
+
+        self.adjustSize()
+        self.reposition()
+
+    def set_position(self, position_key: str):
+        self.position_key = position_key
+        self.reposition()
+
+    def reposition(self, margin: int = 6):
+        screen = QApplication.primaryScreen()
+        if not screen:
+            return
+        geo = screen.availableGeometry()
+        self.adjustSize()
+        if self.position_key == "left_middle":
+            x = geo.x() + margin
+            y = geo.y() + (geo.height() - self.height()) // 2
+        elif self.position_key == "right_middle":
+            x = geo.x() + geo.width() - self.width() - margin
+            y = geo.y() + (geo.height() - self.height()) // 2
+        else:  # "top_center" — дефолтна позиція
+            x = geo.x() + (geo.width() - self.width()) // 2
+            y = geo.y() + margin
+        self.move(QPoint(x, y))
+
+    def toggle_visibility(self):
+        self.setVisible(not self.isVisible())
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    win = ScorebarWindow()
+    win.show()
+    sys.exit(app.exec())

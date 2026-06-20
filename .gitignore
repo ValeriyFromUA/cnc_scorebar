@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Віртуальні середовища
+.venv/
+.venv_win/
+venv/
+env/
+
+# PyInstaller / збірка exe
+build/
+dist/
+*.spec
+
+# Конфіг, що генерується автозбереженням панелі керування при запуску
+scorebar_config.json
+
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Claude Code
+.claude/
