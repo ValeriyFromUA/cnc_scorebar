@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import asdict
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QStandardItem, QStandardItemModel
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QPixmap, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -41,7 +43,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from data import COUNTRIES, FACTIONS, FactionGroup, MatchState, Player
+from data import COUNTRIES, FACTIONS, PLAYER_COLORS, FactionGroup, MatchState, Player
 from themes import THEMES, control_panel_qss, get_theme
 from scorebar import ScorebarWindow
 
@@ -53,6 +55,25 @@ POSITION_LABELS = {
     "left_middle": "Зліва по середині",
     "right_middle": "Праворуч по середині",
 }
+
+REMOTE_PLAYERS_API_URL = "https://www.cnc-general-ukraine.org/api/players_elo/"
+
+
+class RemotePlayersFetchWorker(QObject):
+    """Тягне список гравців (дивізіон + ELO) з cnc-general-ukraine.org у
+    фоновому потоці, щоб не блокувати UI панелі при старті."""
+
+    finished = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    def run(self):
+        try:
+            with urllib.request.urlopen(REMOTE_PLAYERS_API_URL, timeout=8) as resp:
+                data = json.load(resp)
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(data.get("players", []))
 
 
 def _button_only_spin(spin: QSpinBox):
@@ -114,6 +135,16 @@ def build_faction_combo() -> QComboBox:
     return combo
 
 
+def build_color_combo() -> QComboBox:
+    combo = QComboBox()
+    combo.addItem("— Без кольору —", None)
+    for key, label, hex_color in PLAYER_COLORS:
+        pixmap = QPixmap(14, 14)
+        pixmap.fill(QColor(hex_color))
+        combo.addItem(QIcon(pixmap), label, key)
+    return combo
+
+
 def combo_set_data(combo: QComboBox, value: str):
     idx = combo.findData(value)
     if idx < 0:
@@ -163,14 +194,27 @@ class PlayerEditRow(QWidget):
         super().__init__(parent)
         self.fixed_team = fixed_team
         self.show_score = show_score
+        self._division: str | None = None
+        self._elo: int | None = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        # Вибір гравця зі списку cnc-general-ukraine.org (дивізіон + ELO
+        # підставляються автоматично) або "Вручну" — тоді ім'я вводиться
+        # текстовим полем нижче як завжди.
+        self.player_combo = QComboBox()
+        self.player_combo.addItem("— Вручну —", None)
+        self.player_combo.setMaximumWidth(130)
+
         self.name_edit = QLineEdit("Player")
         self.name_edit.setMaximumWidth(110)
         self.country_combo = build_country_combo()
+        self.country_combo.setMaximumWidth(140)
         self.faction_combo = build_faction_combo()
+        self.faction_combo.setMaximumWidth(130)
+        self.color_combo = build_color_combo()
+        self.color_combo.setMaximumWidth(90)
 
         self.score_spin = QSpinBox()
         self.score_spin.setRange(0, 999)
@@ -183,18 +227,53 @@ class PlayerEditRow(QWidget):
         minus_btn.clicked.connect(lambda: self.score_spin.setValue(max(0, self.score_spin.value() - 1)))
         plus_btn.clicked.connect(lambda: self.score_spin.setValue(self.score_spin.value() + 1))
 
+        layout.addWidget(self.player_combo)
         layout.addWidget(self.name_edit)
         layout.addWidget(self.country_combo)
         layout.addWidget(self.faction_combo)
+        layout.addWidget(self.color_combo)
         if show_score:
             layout.addWidget(minus_btn)
             layout.addWidget(self.score_spin)
             layout.addWidget(plus_btn)
 
+        self.player_combo.currentIndexChanged.connect(self.on_player_combo_changed)
         self.name_edit.textChanged.connect(self.changed.emit)
         self.country_combo.currentIndexChanged.connect(self.changed.emit)
         self.faction_combo.currentIndexChanged.connect(self.changed.emit)
+        self.color_combo.currentIndexChanged.connect(self.changed.emit)
         self.score_spin.valueChanged.connect(self.changed.emit)
+
+    def set_remote_players(self, players: list[dict]):
+        """Заповнює спадний список гравцями, отриманими з API
+        cnc-general-ukraine.org (нікнейм, дивізіон, ELO)."""
+        current_data = self.player_combo.currentData()
+        self.player_combo.blockSignals(True)
+        self.player_combo.clear()
+        self.player_combo.addItem("— Вручну —", None)
+        for p in players:
+            label = p.get("nickname") or "?"
+            extras = " / ".join(str(v) for v in (p.get("division"), p.get("elo")) if v)
+            if extras:
+                label = f"{label} ({extras})"
+            self.player_combo.addItem(label, p)
+        if current_data:
+            for i in range(self.player_combo.count()):
+                if self.player_combo.itemData(i) == current_data:
+                    self.player_combo.setCurrentIndex(i)
+                    break
+        self.player_combo.blockSignals(False)
+
+    def on_player_combo_changed(self, index: int):
+        data = self.player_combo.itemData(index)
+        if not data:
+            self._division = None
+            self._elo = None
+            return
+        self.name_edit.setText(data.get("nickname") or self.name_edit.text())
+        self._division = data.get("division")
+        self._elo = data.get("elo")
+        self.changed.emit()
 
     def to_player(self) -> Player:
         return Player(
@@ -203,12 +282,18 @@ class PlayerEditRow(QWidget):
             faction_key=combo_get_data(self.faction_combo) or "usa",
             team=self.fixed_team if self.fixed_team is not None else 0,
             score=self.score_spin.value() if self.show_score else 0,
+            division=self._division,
+            elo=self._elo,
+            color_key=combo_get_data(self.color_combo),
         )
 
     def load_player(self, player: Player):
         self.name_edit.setText(player.name)
         combo_set_data(self.country_combo, player.country_code)
         combo_set_data(self.faction_combo, player.faction_key)
+        combo_set_data(self.color_combo, player.color_key)
+        self._division = player.division
+        self._elo = player.elo
         if self.show_score:
             self.score_spin.setValue(player.score)
 
@@ -225,6 +310,7 @@ class ControlPanel(QWidget):
         self.resize(560, 640)
 
         self.player_rows: list[PlayerEditRow] = []
+        self.remote_players: list[dict] = []
         # Поки йде початкове налаштування (rebuild_players/autoload), autosave
         # вимкнено — інакше дефолтні значення UI перезаписали б щойно
         # завантажений з диска стан ще до того, як autoload встигне його
@@ -244,6 +330,32 @@ class ControlPanel(QWidget):
         self.rebuild_players()
         self.autoload()
         self._suspend_autosave = False
+
+        self.fetch_remote_players()
+
+    # ------------------------------------------------------------------
+    def fetch_remote_players(self):
+        """Підвантажує список гравців (дивізіон + ELO) з
+        cnc-general-ukraine.org у фоновому потоці, щоб не блокувати UI."""
+        self._players_thread = QThread(self)
+        self._players_worker = RemotePlayersFetchWorker()
+        self._players_worker.moveToThread(self._players_thread)
+        self._players_thread.started.connect(self._players_worker.run)
+        self._players_worker.finished.connect(self.on_remote_players_loaded)
+        self._players_worker.failed.connect(self.on_remote_players_failed)
+        self._players_worker.finished.connect(self._players_thread.quit)
+        self._players_worker.failed.connect(self._players_thread.quit)
+        self._players_thread.start()
+
+    def on_remote_players_loaded(self, players: list):
+        self.remote_players = players
+        for row in self.player_rows:
+            row.set_remote_players(players)
+
+    def on_remote_players_failed(self, error: str):
+        # Список гравців із сайту недоступний — мовчки лишаємо лише ручний
+        # ввід, без спливаючих помилок (це не критичний функціонал).
+        pass
 
     # ------------------------------------------------------------------
     def _build_mode_group(self) -> QGroupBox:
@@ -380,8 +492,11 @@ class ControlPanel(QWidget):
         self.ffa_layout.setSpacing(4)
         ffa_outer.addLayout(self.ffa_layout)
 
-        container_layout.addWidget(self.team_columns_widget)
-        container_layout.addWidget(self.ffa_widget)
+        # AlignLeft, щоб контейнер не розтягував коротшу (FFA) колонку на
+        # всю фіксовану ширину панелі — інакше зайвий простір праворуч
+        # виглядав би як порожня дірка після перемикання з командного режиму.
+        container_layout.addWidget(self.team_columns_widget, 0, Qt.AlignmentFlag.AlignLeft)
+        container_layout.addWidget(self.ffa_widget, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.players_scroll.setWidget(self.players_container)
         outer.addWidget(self.players_scroll)
@@ -446,6 +561,17 @@ class ControlPanel(QWidget):
         self.players_scroll.setMinimumHeight(target_height)
         self.players_scroll.setMaximumHeight(target_height)
         self.players_scroll.setMinimumWidth(content_widget.sizeHint().width() + 4)
+        # Перемикання team/FFA ховає одну з колонок — без явної інвалідації
+        # layout-кеш Qt інколи лишає її стару (більшу) ширину, і adjustSize()
+        # не стискає вікно назад до фактично потрібного розміру.
+        self.players_container.layout().invalidate()
+        self.players_container.layout().activate()
+        players_group = self.players_scroll.parentWidget()
+        if players_group and players_group.layout():
+            players_group.layout().invalidate()
+            players_group.layout().activate()
+        self.layout().invalidate()
+        self.layout().activate()
         self.adjustSize()
 
     def _build_actions_group(self) -> QGroupBox:
@@ -541,6 +667,10 @@ class ControlPanel(QWidget):
                 row.changed.connect(self.push_state)
                 self.ffa_layout.addWidget(row)
                 self.player_rows.append(row)
+
+        if self.remote_players:
+            for row in self.player_rows:
+                row.set_remote_players(self.remote_players)
 
         self._resize_players_panel()
         self.push_state()

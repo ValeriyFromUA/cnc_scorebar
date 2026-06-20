@@ -142,6 +142,32 @@ def get_country(code: str) -> Country:
 
 
 # --------------------------------------------------------------------------
+# Кольори гравців (кольоровий трикутник-маркер на скорбарі)
+# --------------------------------------------------------------------------
+
+PLAYER_COLORS: list[tuple[str, str, str]] = [
+    # (key, назва українською, HEX)
+    ("red", "Червоний", "#E74C3C"),
+    ("blue", "Синій", "#3498DB"),
+    ("green", "Зелений", "#2ECC71"),
+    ("yellow", "Жовтий", "#F1C40F"),
+    ("orange", "Помаранчевий", "#E67E22"),
+    ("purple", "Фіолетовий", "#9B59B6"),
+    ("cyan", "Блакитний", "#7FE3EC"),
+    ("pink", "Рожевий", "#FF6FB0"),
+]
+
+PLAYER_COLORS_BY_KEY: dict[str, tuple[str, str]] = {key: (label, hex_) for key, label, hex_ in PLAYER_COLORS}
+
+
+def get_player_color_hex(key: str | None) -> str | None:
+    if not key:
+        return None
+    entry = PLAYER_COLORS_BY_KEY.get(key)
+    return entry[1] if entry else None
+
+
+# --------------------------------------------------------------------------
 # Модель гравця / матчу
 # --------------------------------------------------------------------------
 
@@ -152,6 +178,9 @@ class Player:
     faction_key: str = "usa"
     team: int = 0       # 0 = ліва/команда A, 1 = права/команда B (FFA: ігнорується)
     score: int = 0
+    division: str | None = None  # дивізіон з cnc-general-ukraine.org, якщо гравця обрано зі списку
+    elo: int | None = None       # ELO з cnc-general-ukraine.org, якщо гравця обрано зі списку
+    color_key: str | None = None  # ключ кольору гравця (див. PLAYER_COLORS), None = без маркера
 
     @property
     def faction(self) -> Faction:

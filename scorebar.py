@@ -13,7 +13,7 @@ import re
 import sys
 
 from PyQt6.QtCore import QRectF, Qt, QTimer, QPoint, QPointF
-from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QTransform
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QTransform
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from data import Faction, FactionGroup, MatchState, Player, get_country, get_faction
+from data import Faction, FactionGroup, MatchState, Player, get_country, get_faction, get_player_color_hex
 from themes import Theme, get_theme
 
 
@@ -465,12 +465,60 @@ class FactionBadge(QWidget):
 # Рядок гравця
 # --------------------------------------------------------------------------
 
+class ColorTag(QWidget):
+    """Маленький кольоровий трикутник-маркер гравця: одна сторона прилягає
+    до зовнішньої рамки командної панелі, а вершина (кут) показує в бік
+    гравця (всередину рядка)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(9)
+        self._color: str | None = None
+        self._point_right = True
+
+    def set_color(self, color_hex: str | None, point_right: bool):
+        self._color = color_hex
+        self._point_right = point_right
+        self.update()
+
+    def paintEvent(self, event):
+        if not self._color:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(self._color))
+        w, h = self.width(), self.height()
+        path = QPainterPath()
+        if self._point_right:
+            path.moveTo(0, h * 0.2)
+            path.lineTo(0, h * 0.8)
+            path.lineTo(w, h * 0.5)
+        else:
+            path.moveTo(w, h * 0.2)
+            path.lineTo(w, h * 0.8)
+            path.lineTo(0, h * 0.5)
+        path.closeSubpath()
+        painter.drawPath(path)
+        painter.end()
+
+
 class PlayerRow(QWidget):
-    def __init__(self, theme: Theme, show_rank: bool = False, show_score: bool = False, parent=None):
+    NAME_WIDTH = 120
+
+    def __init__(
+        self,
+        theme: Theme,
+        show_rank: bool = False,
+        show_score: bool = False,
+        mirrored: bool = False,
+        parent=None,
+    ):
         super().__init__(parent)
         self.theme = theme
         self.show_rank = show_rank
         self.show_score = show_score
+        self.mirrored = mirrored
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 2, 6, 2)
@@ -479,19 +527,51 @@ class PlayerRow(QWidget):
         self.rank_label = QLabel("")
         self.rank_label.setFixedWidth(16)
         self.flag_label = QLabel("")
+        self.flag_label.setFixedWidth(24)
+        self.flag_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.name_label = QLabel("Player")
+        # Фіксована ширина імені (з елайдингом), щоб обидві командні панелі
+        # завжди мали однакову загальну ширину незалежно від довжини ніка —
+        # це потрібно, щоб рахунок/заголовок лишались строго по центру.
+        self.name_label.setFixedWidth(self.NAME_WIDTH)
+        # ELO/дивізіон гравця (з cnc-general-ukraine.org), якщо обрано зі списку.
+        self.rating_label = QLabel("")
+        self.rating_label.setFixedWidth(44)
+        self.rating_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.badge = FactionBadge(theme)
         self.score_label = QLabel("0")
         self.score_label.setFixedWidth(28)
         self.score_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # Кольоровий трикутник-маркер гравця — завжди прилягає до
+        # зовнішнього краю рядка (краю командної панелі), вершиною
+        # всередину, в бік гравця.
+        self.color_tag = ColorTag()
 
-        if show_rank:
-            layout.addWidget(self.rank_label)
-        layout.addWidget(self.flag_label)
-        layout.addWidget(self.name_label, 1)
-        layout.addWidget(self.badge)
-        if show_score:
-            layout.addWidget(self.score_label)
+        if mirrored:
+            # Дзеркальне розташування для правої команди: прапор країни
+            # лишається на зовнішньому краю (тепер праворуч), а фракція —
+            # завжди ближче до центру скорбару. Рейтинг (дивізіон/ELO)
+            # завжди між прапором і ніком.
+            self.name_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            if show_score:
+                layout.addWidget(self.score_label)
+            layout.addWidget(self.badge)
+            layout.addWidget(self.name_label)
+            layout.addWidget(self.rating_label)
+            layout.addWidget(self.flag_label)
+            if show_rank:
+                layout.addWidget(self.rank_label)
+            layout.addWidget(self.color_tag)
+        else:
+            layout.addWidget(self.color_tag)
+            if show_rank:
+                layout.addWidget(self.rank_label)
+            layout.addWidget(self.flag_label)
+            layout.addWidget(self.rating_label)
+            layout.addWidget(self.name_label)
+            layout.addWidget(self.badge)
+            if show_score:
+                layout.addWidget(self.score_label)
 
         self._apply_fonts()
 
@@ -514,6 +594,11 @@ class PlayerRow(QWidget):
         self.score_label.setFont(name_font)
         self.score_label.setStyleSheet(f"color: {self.theme.accent}; background: transparent;")
 
+        rating_font = QFont(self.theme.font_family.split(",")[0].strip())
+        rating_font.setPointSize(8)
+        self.rating_label.setFont(rating_font)
+        self.rating_label.setStyleSheet(f"color: {self.theme.text_secondary}; background: transparent;")
+
     def set_theme(self, theme: Theme):
         self.theme = theme
         self._apply_fonts()
@@ -530,8 +615,27 @@ class PlayerRow(QWidget):
         faction = get_faction(player.faction_key)
 
         self.flag_label.setText(country.flag)
-        self.name_label.setText(player.name or "—")
+        name_text = player.name or "—"
+        metrics = QFontMetrics(self.name_label.font())
+        # Лімітуємо ширину константою (а не .width()), бо віджет може ще не
+        # пройти layout-пас на момент першого update_player().
+        elided = metrics.elidedText(name_text, Qt.TextElideMode.ElideRight, self.NAME_WIDTH - 4)
+        self.name_label.setText(elided)
+        self.name_label.setToolTip(name_text)
         self.badge.set_faction(faction)
+        self.color_tag.set_color(get_player_color_hex(player.color_key), point_right=not self.mirrored)
+
+        # Дивізіон показуємо лише якщо це одна з ліг A/B/C/D —
+        # "Player", "Division E" чи відсутній дивізіон не відображаємо.
+        rating_parts = []
+        if player.division:
+            division_letter = player.division.removeprefix("Division ").strip().upper()
+            if division_letter in ("A", "B", "C", "D"):
+                rating_parts.append(division_letter)
+        if player.elo is not None:
+            rating_parts.append(str(player.elo))
+        self.rating_label.setText(" · ".join(rating_parts))
+
         if self.show_score:
             self.score_label.setText(str(player.score))
         if self.show_rank:
@@ -563,7 +667,9 @@ class TeamPanel(TacticalPanel):
 
     def set_size(self, n: int):
         while len(self.rows) < n:
-            row = PlayerRow(self.theme, show_rank=False, show_score=False)
+            # Права команда дзеркальна: прапор країни лишається на
+            # зовнішньому краю панелі, а фракція — ближче до центру.
+            row = PlayerRow(self.theme, show_rank=False, show_score=False, mirrored=(self.side == "right"))
             self.rows.append(row)
             self.rows_layout.addWidget(row)
         while len(self.rows) > n:
@@ -821,6 +927,13 @@ class ScorebarWindow(QWidget):
             self.right_panel.update_players(team_b)
             self.center_panel.update_state(self.state)
 
+        # Перемикання team/FFA ховає/показує цілі панелі — без явної
+        # інвалідації layout-кеш Qt інколи лишає старі (більші) розміри
+        # прихованих віджетів, і adjustSize() не стискає вікно назад.
+        self.row_layout.invalidate()
+        self.row_layout.activate()
+        self.layout().invalidate()
+        self.layout().activate()
         self.adjustSize()
         self.reposition()
 
