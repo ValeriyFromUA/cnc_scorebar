@@ -85,7 +85,7 @@ class TacticalPanel(QFrame):
         лише кольором, а й формою рамки."""
         shape = self.theme.shape
         path = QPainterPath()
-        if shape in ("brackets", "scanline"):
+        if shape in ("brackets", "scanline", "concrete", "hazard"):
             path.addRect(0, 0, w, h)
         elif shape in ("carved", "glass"):
             radius = max(n, 6)
@@ -112,8 +112,39 @@ class TacticalPanel(QFrame):
             path.lineTo(0, h)
             path.lineTo(0, n)
             path.closeSubpath()
+        elif shape == "toxic":
+            path = self._toxic_path(w, h, n)
         else:  # "notch" — тактичний восьмикутник (CnC)
             path = self._notch_path(n)
+        return path
+
+    def _toxic_path(self, w: int, h: int, n: int) -> QPainterPath:
+        """Хвиляста "ослизла" рамка — періодичні випуклості по периметру."""
+        path = QPainterPath()
+        step = 6
+        amp = max(2.0, n / 3.0)
+        pts: list[tuple[float, float]] = []
+        x = 0.0
+        while x <= w:
+            pts.append((x, abs(amp * math.sin(x / 14.0))))
+            x += step
+        y = 0.0
+        while y <= h:
+            pts.append((w - abs(amp * math.sin(y / 14.0)), y))
+            y += step
+        x = float(w)
+        while x >= 0:
+            pts.append((x, h - abs(amp * math.sin(x / 14.0))))
+            x -= step
+        y = float(h)
+        while y >= 0:
+            pts.append((abs(amp * math.sin(y / 14.0)), y))
+            y -= step
+        if pts:
+            path.moveTo(pts[0][0], pts[0][1])
+            for px, py in pts[1:]:
+                path.lineTo(px, py)
+            path.closeSubpath()
         return path
 
     def _draw_corner_brackets(self, painter: QPainter, w: int, h: int):
@@ -186,6 +217,82 @@ class TacticalPanel(QFrame):
         painter.setPen(pen)
         painter.drawPath(inner)
 
+    def _draw_toxic_bubbles(self, painter: QPainter, w: int, h: int):
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        color = parse_color(self.theme.accent)
+        bubbles = (
+            (0.08, 0.72, 3.0), (0.18, 0.38, 2.0), (0.32, 0.8, 3.5),
+            (0.5, 0.28, 2.0), (0.65, 0.7, 3.0), (0.8, 0.42, 2.0), (0.92, 0.78, 3.0),
+        )
+        for fx, fy, r in bubbles:
+            painter.setOpacity(0.4)
+            painter.setBrush(QColor(color))
+            painter.drawEllipse(QPointF(w * fx, h * fy), r, r)
+        painter.restore()
+
+    _CONCRETE_GRAYS = (
+        QColor(255, 255, 255, 14), QColor(0, 0, 0, 18),
+        QColor(255, 255, 255, 8), QColor(0, 0, 0, 10),
+    )
+
+    def _draw_concrete_texture(self, painter: QPainter, path: QPainterPath, w: int, h: int):
+        """Кам'яно-сіра бетонна крапчаста текстура (Control: FBC)."""
+        painter.save()
+        painter.setClipPath(path)
+        painter.setPen(Qt.PenStyle.NoPen)
+        speckles = self._CONCRETE_GRAYS
+        block = 7
+        ix = 0
+        x = 0
+        while x < w:
+            iy = 0
+            y = 0
+            while y < h:
+                idx = (ix * 928371 + iy * 123457) % len(speckles)
+                if idx != 2:  # лишаємо частину клітинок прозорими — менш регулярний візерунок
+                    painter.setBrush(speckles[idx])
+                    painter.drawRect(x, y, 3, 3)
+                y += block
+                iy += 1
+            x += block
+            ix += 1
+        painter.restore()
+
+        # тонкий темно-червоний "Hiss"-натяк — одна ледь помітна тріщина
+        pen = QPen(parse_color(self.theme.accent_secondary))
+        pen.setWidthF(1.0)
+        painter.save()
+        painter.setOpacity(0.5)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(w * 0.15, h * 0.85), QPointF(w * 0.4, h * 0.55))
+        painter.restore()
+
+    def _draw_hazard_stripes(self, painter: QPainter, w: int, h: int):
+        """Чорно-жовта смуга техніки безпеки вздовж верхнього й нижнього краю."""
+        band = 5
+        for y0 in (0, h - band):
+            painter.save()
+            painter.translate(0, y0)
+            painter.setClipRect(0, 0, w, band)
+            painter.setPen(Qt.PenStyle.NoPen)
+            stripe_w = 10
+            x = -band
+            i = 0
+            colors = (QColor(20, 20, 18), parse_color(self.theme.accent_secondary))
+            while x < w + band:
+                painter.setBrush(colors[i % 2])
+                stripe = QPainterPath()
+                stripe.moveTo(x, 0)
+                stripe.lineTo(x + stripe_w, 0)
+                stripe.lineTo(x + stripe_w - band, band)
+                stripe.lineTo(x - band, band)
+                stripe.closeSubpath()
+                painter.drawPath(stripe)
+                x += stripe_w
+                i += 1
+            painter.restore()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -225,6 +332,13 @@ class TacticalPanel(QFrame):
             self._draw_carbon_weave(painter, path, w, h)
         elif shape == "glass":
             self._draw_glass_highlight(painter, path, w, h)
+        elif shape == "toxic":
+            self._draw_toxic_bubbles(painter, w, h)
+        elif shape == "concrete":
+            self._draw_concrete_texture(painter, path, w, h)
+        elif shape == "hazard":
+            self._draw_corner_brackets(painter, w, h)
+            self._draw_hazard_stripes(painter, w, h)
 
         painter.end()
 

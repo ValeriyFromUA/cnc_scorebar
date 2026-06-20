@@ -77,7 +77,6 @@ class Country:
 
 COUNTRIES: list[Country] = [
     Country("UA", "Ukraine"),
-    Country("RU", "Russia"),
     Country("US", "United States"),
     Country("CA", "Canada"),
     Country("GB", "United Kingdom"),

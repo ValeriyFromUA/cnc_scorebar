@@ -38,6 +38,9 @@ class Theme:
     #   "diamond"   — асиметрично зрізані протилежні кути + карбонове плетіння
     #   "glass"     — сильно заокруглений прямокутник зі скляним відблиском
     #   "scanline"  — прямокутник + HUD-дужки і горизонтальні скан-лінії
+    #   "toxic"     — хвиляста "ослизла" рамка + токсичні бульбашки
+    #   "concrete"  — прямокутник з кам'яно-сірою бетонною текстурою
+    #   "hazard"    — прямокутник + чорно-жовті смуги техніки безпеки
     shape: str = "notch"
 
 
@@ -188,6 +191,82 @@ THEMES: dict[str, Theme] = {
         font_family="Consolas, Courier New, monospace",
         notch=6,
         shape="scanline",
+    ),
+    "control": Theme(
+        # Стиль гри Control (FBC): кам'яно-сіра бетонна архітектура Старого
+        # дому — холодний бетон, лише тонкий темно-червоний натяк на Hiss.
+        key="control",
+        name="Control: Federal Bureau",
+        bg="rgba(58, 58, 60, 235)",
+        bg_alt="rgba(48, 48, 50, 245)",
+        border="#8E8E93",
+        accent="#C7C7CC",
+        accent_secondary="#7A1F1F",
+        text_primary="#EDEDED",
+        text_secondary="#9A9A9E",
+        team_a="#8E8E93",
+        team_b="#7A1F1F",
+        glow=False,
+        font_family="Bank Gothic, Eurostile, Consolas, sans-serif",
+        notch=4,
+        shape="concrete",
+    ),
+    "toxic": Theme(
+        # Токсична зона: ослизла зелена рамка з бульбашками отрути, як
+        # радіоактивне болото.
+        key="toxic",
+        name="Токсична зона",
+        bg="rgba(6, 18, 10, 225)",
+        bg_alt="rgba(10, 26, 14, 235)",
+        border="#7FFF3C",
+        accent="#A8FF00",
+        accent_secondary="#3E8914",
+        text_primary="#E4FFD8",
+        text_secondary="#8FCB6A",
+        team_a="#A8FF00",
+        team_b="#FF66C4",
+        glow=True,
+        font_family="Consolas, Eurostile, sans-serif",
+        notch=8,
+        shape="toxic",
+    ),
+    "black_cat": Theme(
+        # Чорний кіт: глибокий чорний фон + золото (золотий — лише колір
+        # акценту/рамки, без буквальних "очей" на панелі).
+        key="black_cat",
+        name="Чорний кіт",
+        bg="rgba(4, 4, 4, 240)",
+        bg_alt="rgba(10, 10, 10, 248)",
+        border="#D4AF37",
+        accent="#FFD700",
+        accent_secondary="#8A6D1A",
+        text_primary="#F1E6C8",
+        text_secondary="#8A8262",
+        team_a="#FFD700",
+        team_b="#8A6D1A",
+        glow=True,
+        font_family="Cinzel, Georgia, Times New Roman, serif",
+        notch=10,
+        shape="carved",
+    ),
+    "half_life": Theme(
+        # Half-Life: індустріальний HEV-стиль — холодний сталевий фон,
+        # фірмовий HEV-оранжевий акцент і чорно-жовта смуга техніки безпеки.
+        key="half_life",
+        name="Half-Life: HEV",
+        bg="rgba(16, 18, 16, 235)",
+        bg_alt="rgba(22, 24, 22, 245)",
+        border="#4A4A42",
+        accent="#FF7A00",
+        accent_secondary="#F2C200",
+        text_primary="#E8E6DC",
+        text_secondary="#9A9A8E",
+        team_a="#FF7A00",
+        team_b="#5A8C7A",
+        glow=False,
+        font_family="Eurostile, Arial Narrow, Segoe UI, sans-serif",
+        notch=4,
+        shape="hazard",
     ),
 }
 
