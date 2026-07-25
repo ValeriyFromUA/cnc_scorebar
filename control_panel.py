@@ -23,11 +23,12 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict
 
-from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPixmap, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -44,8 +45,14 @@ from PyQt6.QtWidgets import (
 )
 
 from data import COUNTRIES, FACTIONS, PLAYER_COLORS, FactionGroup, MatchState, Player
-from themes import THEMES, control_panel_qss, get_theme
+from themes import THEMES, control_panel_qss, get_default_icon_variant, get_theme
 from scorebar import ScorebarWindow
+
+ICON_VARIANT_LABELS = {
+    "blue": "Синя",
+    "orng": "Оранжева",
+    "slvr": "Срібна",
+}
 
 
 CONFIG_PATH = "scorebar_config.json"
@@ -114,8 +121,11 @@ def _build_stepper_row(label: str, minimum: int, maximum: int, value: int) -> tu
 
 def build_country_combo() -> QComboBox:
     combo = QComboBox()
+    combo.setIconSize(QSize(20, 14))
     for country in COUNTRIES:
-        combo.addItem(f"{country.flag}  {country.name}", country.code)
+        pixmap = QPixmap(str(country.flag_path))
+        icon = QIcon(pixmap) if not pixmap.isNull() else QIcon()
+        combo.addItem(icon, country.name, country.code)
     return combo
 
 
@@ -333,6 +343,12 @@ class ControlPanel(QWidget):
 
         self.fetch_remote_players()
 
+    def closeEvent(self, event):
+        # Оверлей без панелі керування нікому не потрібен — закриваємо його
+        # разом із панеллю, а не лишаємо висіти окремим процесом/вікном.
+        self.scorebar.close()
+        super().closeEvent(event)
+
     # ------------------------------------------------------------------
     def fetch_remote_players(self):
         """Підвантажує список гравців (дивізіон + ELO) з
@@ -404,11 +420,25 @@ class ControlPanel(QWidget):
         self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
         layout.addWidget(self.theme_combo)
 
+        layout.addWidget(QLabel("Іконка генерала:"))
+        self.icon_variant_combo = QComboBox()
+        for variant, label in ICON_VARIANT_LABELS.items():
+            self.icon_variant_combo.addItem(label, variant)
+        self.icon_variant_combo.currentIndexChanged.connect(self.on_icon_variant_changed)
+        layout.addWidget(self.icon_variant_combo)
+
         layout.addWidget(QLabel("Заголовок:"))
         self.title_edit = QLineEdit("SCOREBAR")
         self.title_edit.setMaximumWidth(120)
         self.title_edit.textChanged.connect(self.on_title_changed)
         layout.addWidget(self.title_edit)
+
+        self.always_on_top_check = QCheckBox("Завжди зверху")
+        self.always_on_top_check.setToolTip(
+            "Не потрібно для захоплення в OBS — OBS сам розміщує джерело в сцені."
+        )
+        self.always_on_top_check.toggled.connect(self.on_always_on_top_changed)
+        layout.addWidget(self.always_on_top_check)
 
         return box
 
@@ -703,11 +733,25 @@ class ControlPanel(QWidget):
         key = self.theme_combo.currentData()
         self.scorebar.set_theme(key)
         self.apply_theme_qss()
+        # Кожна тема має свій дефолтний колір іконки генерала — застосовуємо
+        # його при зміні теми; після цього колір можна перемкнути вручну.
+        idx = self.icon_variant_combo.findData(get_default_icon_variant(key))
+        if idx >= 0:
+            self.icon_variant_combo.setCurrentIndex(idx)
         self.autosave()
 
     def apply_theme_qss(self):
         theme = get_theme(self.theme_combo.currentData() or "cnc")
         self.setStyleSheet(control_panel_qss(theme))
+
+    def on_icon_variant_changed(self):
+        variant = self.icon_variant_combo.currentData()
+        self.scorebar.set_icon_variant(variant)
+        self.autosave()
+
+    def on_always_on_top_changed(self, checked: bool):
+        self.scorebar.set_always_on_top(checked)
+        self.autosave()
 
     def on_title_changed(self, text: str):
         self.scorebar.set_title(text)
@@ -721,6 +765,8 @@ class ControlPanel(QWidget):
             "ffa_count": self.ffa_count_spin.value(),
             "map_name": self.map_edit.text(),
             "theme": self.theme_combo.currentData(),
+            "icon_variant": self.icon_variant_combo.currentData(),
+            "always_on_top": self.always_on_top_check.isChecked(),
             "title": self.title_edit.text(),
             "players": [asdict(row.to_player()) for row in self.player_rows],
             "score_a": self.scorebar.state.score_a,
@@ -739,6 +785,17 @@ class ControlPanel(QWidget):
         idx = self.theme_combo.findData(theme_key)
         if idx >= 0:
             self.theme_combo.setCurrentIndex(idx)
+
+        # Застосовується ПІСЛЯ вибору теми, бо зміна теми сама скидає колір
+        # іконки на дефолтний для цієї теми — тут перекриваємо його
+        # збереженим (можливо, вручну обраним) значенням, якщо воно є.
+        icon_variant = data.get("icon_variant")
+        if icon_variant:
+            idx = self.icon_variant_combo.findData(icon_variant)
+            if idx >= 0:
+                self.icon_variant_combo.setCurrentIndex(idx)
+
+        self.always_on_top_check.setChecked(bool(data.get("always_on_top", False)))
 
         self.title_edit.setText(data.get("title", "SCOREBAR"))
 
