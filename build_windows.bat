@@ -16,7 +16,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 pip install pyinstaller
 
-pyinstaller --noconfirm --onefile --windowed --name Scorebar control_panel.py
+pyinstaller --noconfirm --onefile --windowed --name Scorebar --add-data "Icons;Icons" control_panel.py
 
 echo.
 echo Готово: dist\Scorebar.exe

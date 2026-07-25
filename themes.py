@@ -277,6 +277,32 @@ def get_theme(key: str) -> Theme:
     return THEMES.get(key, THEMES[DEFAULT_THEME_KEY])
 
 
+# Кольоровий варіант іконки генерала (Icons/Generals/*_<variant>.png:
+# blue/orng/slvr), що вмикається за замовчуванням при виборі теми — підібраний
+# за співзвучністю з акцентним кольором теми. Користувач може перемкнути
+# вручну в панелі керування; це лише стартове значення для нової теми.
+DEFAULT_ICON_VARIANT = "blue"
+
+ICON_VARIANT_BY_THEME: dict[str, str] = {
+    "cnc": "orng",
+    "neon": "blue",
+    "crysis3": "blue",
+    "witcher3": "orng",
+    "metal": "slvr",
+    "carbon": "slvr",
+    "glass": "blue",
+    "terminator": "slvr",
+    "control": "slvr",
+    "toxic": "orng",
+    "black_cat": "orng",
+    "half_life": "orng",
+}
+
+
+def get_default_icon_variant(theme_key: str) -> str:
+    return ICON_VARIANT_BY_THEME.get(theme_key, DEFAULT_ICON_VARIANT)
+
+
 def control_panel_qss(theme: Theme) -> str:
     """QSS для звичайного (не-overlay) вікна панелі керування.
 

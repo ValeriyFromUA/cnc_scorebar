@@ -4,12 +4,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+
+from resources import resource_path
+
+FLAGS_DIR = resource_path("Icons", "Flags")
+ARMIES_DIR = resource_path("Icons", "Armies")
+GENERALS_DIR = resource_path("Icons", "Generals")
 
 
 class FactionGroup(Enum):
     USA = "USA"
     CHINA = "China"
     GLA = "GLA"
+
+
+# Лого армії (Icons/Armies) для базової фракції кожної групи — без
+# кольорових варіантів, один файл на групу.
+ARMY_LOGO_FILE: dict[FactionGroup, str] = {
+    FactionGroup.USA: "SAFactionLogo144_US.png",
+    FactionGroup.CHINA: "SNFactionLogo144_China.png",
+    FactionGroup.GLA: "SUFactionLogo144_GLA.png",
+}
 
 
 @dataclass(frozen=True)
@@ -20,27 +36,36 @@ class Faction:
     abbr: str           # коротка позначка для бейджа (3-5 символів)
     color: str          # основний колір фракції (HEX)
     color_dark: str      # темніший відтінок (для рамок/градієнтів)
+    # Ім'я файлу генерала в Icons/Generals (без кольорового суфікса й
+    # розширення), напр. "AirGeneral" -> "AirGeneral_blue.png". None для
+    # базових фракцій (usa/china/gla) — для них береться лого армії.
+    general_icon: str | None = None
+
+    def icon_path(self, variant: str) -> Path:
+        if self.general_icon:
+            return GENERALS_DIR / f"{self.general_icon}_{variant}.png"
+        return ARMIES_DIR / ARMY_LOGO_FILE[self.group]
 
 
 # Базові фракції + генерали Zero Hour
 FACTIONS: list[Faction] = [
     # --- USA ---
     Faction("usa", "USA", FactionGroup.USA, "USA", "#3D72B4", "#1F3A5F"),
-    Faction("usa_super", "USA Superweapon", FactionGroup.USA, "SWG", "#6FA8DC", "#345A7A"),
-    Faction("usa_laser", "USA Laser", FactionGroup.USA, "LSR", "#00C8FF", "#0A5C70"),
-    Faction("usa_air", "USA Air Force", FactionGroup.USA, "AF", "#4FA8E0", "#235077"),
+    Faction("usa_super", "USA Superweapon", FactionGroup.USA, "SWG", "#6FA8DC", "#345A7A", "SuperWGeneral"),
+    Faction("usa_laser", "USA Laser", FactionGroup.USA, "LSR", "#00C8FF", "#0A5C70", "LaserGeneral"),
+    Faction("usa_air", "USA Air Force", FactionGroup.USA, "AF", "#4FA8E0", "#235077", "AirGeneral"),
 
     # --- China ---
     Faction("china", "China", FactionGroup.CHINA, "CHN", "#C0392B", "#6E1F16"),
-    Faction("china_inf", "China Infantry", FactionGroup.CHINA, "INF", "#E05B3C", "#7A2D1C"),
-    Faction("china_tank", "China Tank", FactionGroup.CHINA, "TNK", "#8B1A1A", "#4A0E0E"),
-    Faction("china_nuke", "China Nuke", FactionGroup.CHINA, "NUK", "#A8C000", "#566200"),
+    Faction("china_inf", "China Infantry", FactionGroup.CHINA, "INF", "#E05B3C", "#7A2D1C", "InfantryGeneral"),
+    Faction("china_tank", "China Tank", FactionGroup.CHINA, "TNK", "#8B1A1A", "#4A0E0E", "TankGeneral"),
+    Faction("china_nuke", "China Nuke", FactionGroup.CHINA, "NUK", "#A8C000", "#566200", "NukeGeneral"),
 
     # --- GLA ---
     Faction("gla", "GLA", FactionGroup.GLA, "GLA", "#9C7A3C", "#5A461F"),
-    Faction("gla_toxin", "GLA Toxin", FactionGroup.GLA, "TOX", "#6B8E23", "#3A4D12"),
-    Faction("gla_demo", "GLA Demolition", FactionGroup.GLA, "DEM", "#D2691E", "#7A3B10"),
-    Faction("gla_stealth", "GLA Stealth", FactionGroup.GLA, "STL", "#5B4B8A", "#2E264A"),
+    Faction("gla_toxin", "GLA Toxin", FactionGroup.GLA, "TOX", "#6B8E23", "#3A4D12", "ToxinGeneral"),
+    Faction("gla_demo", "GLA Demolition", FactionGroup.GLA, "DEM", "#D2691E", "#7A3B10", "DemoGeneral"),
+    Faction("gla_stealth", "GLA Stealth", FactionGroup.GLA, "STL", "#5B4B8A", "#2E264A", "StealthGeneral"),
 ]
 
 FACTIONS_BY_KEY: dict[str, Faction] = {f.key: f for f in FACTIONS}
@@ -53,17 +78,9 @@ def get_faction(key: str) -> Faction:
 # --------------------------------------------------------------------------
 # Країни / прапори
 # --------------------------------------------------------------------------
-# Прапор обчислюється з ISO-3166-1 alpha-2 коду через юнікодові
-# "regional indicator symbols" — без зображень, працює на Win/macOS/Linux
-# за умови наявності емодзі-шрифта (Segoe UI Emoji / Apple Color Emoji).
-
-def flag_emoji(country_code: str) -> str:
-    code = country_code.strip().upper()
-    if len(code) != 2 or not code.isalpha():
-        return "🏳"
-    base = 0x1F1E6
-    return "".join(chr(base + ord(ch) - ord("A")) for ch in code)
-
+# Прапори — реальні PNG (Icons/Flags/<code>.png), а не юнікод-емодзі: Windows
+# з 2021 навмисно показує замість емодзі-прапора лише дві літери коду
+# країни, тож емодзі-варіант на Windows виглядав як "US"/"UA" замість іконки.
 
 @dataclass(frozen=True)
 class Country:
@@ -71,8 +88,8 @@ class Country:
     name: str
 
     @property
-    def flag(self) -> str:
-        return flag_emoji(self.code)
+    def flag_path(self) -> Path:
+        return FLAGS_DIR / f"{self.code.lower()}.png"
 
 
 COUNTRIES: list[Country] = [
