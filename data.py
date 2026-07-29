@@ -92,8 +92,9 @@ class Country:
         return FLAGS_DIR / f"{self.code.lower()}.png"
 
 
-COUNTRIES: list[Country] = [
-    Country("UA", "Ukraine"),
+# Всі країни, крім України — порядок тут неважливий, підсумковий список
+# нижче сортується за назвою.
+_OTHER_COUNTRIES: list[Country] = [
     Country("US", "United States"),
     Country("CA", "Canada"),
     Country("GB", "United Kingdom"),
@@ -146,6 +147,14 @@ COUNTRIES: list[Country] = [
     Country("GE", "Georgia"),
     Country("AM", "Armenia"),
     Country("AZ", "Azerbaijan"),
+]
+
+# Порядок у комбобоксі: Україна завжди перша, піратський прапор другий (це
+# не країна, тому за алфавітом його шукати незручно), решта — за алфавітом.
+COUNTRIES: list[Country] = [
+    Country("UA", "Ukraine"),
+    Country("PIRATE", "Pirate"),
+    *sorted(_OTHER_COUNTRIES, key=lambda c: c.name),
 ]
 
 COUNTRIES_BY_CODE: dict[str, Country] = {c.code: c for c in COUNTRIES}
@@ -216,9 +225,3 @@ class MatchState:
     score_a: int = 0            # рахунок команди A (для командних режимів)
     score_b: int = 0            # рахунок команди B
     map_name: str = ""
-
-    @property
-    def mode_label(self) -> str:
-        if self.ffa:
-            return f"FFA {len(self.players)}P"
-        return f"{self.team_size}v{self.team_size}"
