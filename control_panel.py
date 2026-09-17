@@ -2,10 +2,11 @@
 теми, позиція оверлею, збереження/завантаження конфігурації.
 
 Додаток не реагує на клавіатуру взагалі: жодних гарячих клавіш немає,
-з клавіатурою працює лише ця панель (текстові поля імені/карти/назви),
-а всі числові поля (рахунок, розмір команди, кількість гравців) — лише
-через кнопки інтерфейсу (+/- або стрілки спінбокса), без прямого вводу
-з клавіатури.
+з клавіатурою працює лише ця панель. Оверлей ніколи не приймає
+клавіатурний фокус (WA_ShowWithoutActivating + FocusPolicy.NoFocus,
+scorebar.py), тож фокус у полях цієї панелі — і текстових, і числових —
+ніяк не впливає на гру: усі текстові й числові поля можна редагувати як
+з клавіатури, так і кнопками +/- (де вони є).
 
 Поточний стан автоматично зберігається у CONFIG_PATH після кожної зміни
 (autosave) і підвантажується звідти при старті (autoload) — тож при
@@ -56,7 +57,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from data import COUNTRIES, FACTIONS, PLAYER_COLORS, FactionGroup, MatchState, Player
+from data import COUNTRIES, FACTIONS, NO_FACTION_KEY, PLAYER_COLORS, FactionGroup, MatchState, Player
 from themes import THEMES, control_panel_qss, get_default_icon_variant, get_theme
 from scorebar import ScorebarWindow
 
@@ -134,24 +135,27 @@ class RemotePlayersFetchWorker(QObject):
         self.finished.emit(data.get("players", []))
 
 
-def _button_only_spin(spin: QSpinBox):
-    """Забороняє прямий ввід цифр з клавіатури — значення міняється лише
-    кнопками (стрілками спінбокса або сусідніми +/- кнопками)."""
-    spin.setReadOnly(True)
-    spin.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+def _configure_spin(spin: QSpinBox):
+    """Значення можна і ввести вручну з клавіатури (як ELO), і змінювати
+    сусідніми кнопками +/- (нативні стрілки спінбокса сховані — вони
+    дублювали б ці кнопки). Раніше поле було button-only через побоювання,
+    що клавіатурний фокус у панелі керування дійде до гри/оверлею, але
+    оверлей від самого початку не приймає фокус (`WA_ShowWithoutActivating`
+    + `FocusPolicy.NoFocus` на ScorebarWindow, scorebar.py), тож це
+    неможливо в принципі."""
     spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
 
 
 def _build_stepper_row(label: str, minimum: int, maximum: int, value: int) -> tuple[QHBoxLayout, QSpinBox]:
-    """Рядок "мінус / число / плюс" — зміна значення лише кнопками, в межах
-    [minimum, maximum]."""
+    """Рядок "мінус / число / плюс": значення можна і ввести вручну, і
+    змінювати кнопками, в межах [minimum, maximum]."""
     row = QHBoxLayout()
     row.addWidget(QLabel(label))
 
     spin = QSpinBox()
     spin.setRange(minimum, maximum)
     spin.setValue(value)
-    _button_only_spin(spin)
+    _configure_spin(spin)
 
     minus_btn = QPushButton("-")
     minus_btn.setFixedWidth(24)
@@ -183,6 +187,9 @@ def build_country_combo() -> QComboBox:
 def build_faction_combo() -> QComboBox:
     combo = QComboBox()
     model = QStandardItemModel(combo)
+    none_item = QStandardItem("— Без генерала —")
+    none_item.setData(NO_FACTION_KEY, Qt.ItemDataRole.UserRole)
+    model.appendRow(none_item)
     for group in (FactionGroup.USA, FactionGroup.CHINA, FactionGroup.GLA):
         header = QStandardItem(f"— {group.value} —")
         header.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -295,13 +302,19 @@ class PlayerEditRow(QWidget):
         self.elo_edit.setPlaceholderText("ELO")
         self.elo_edit.setValidator(QIntValidator(0, 9999, self))
         self.elo_edit.setMaximumWidth(64)
+        # Примусово прибирає ELO саме для цього гравця, навіть якщо він
+        # обраний зі списку сайту (де скачане ELO інакше завжди підставляється
+        # назад при очищенні elo_edit).
+        self.hide_elo_check = QCheckBox("Без ELO")
+        self.hide_elo_check.setToolTip("Сховати ELO цього гравця на оверлеї")
+        self.hide_elo_check.toggled.connect(self.elo_edit.setDisabled)
         self.country_combo = build_country_combo()
         self.faction_combo = build_faction_combo()
         self.color_combo = build_color_combo()
 
         self.score_spin = QSpinBox()
         self.score_spin.setRange(0, 999)
-        _button_only_spin(self.score_spin)
+        _configure_spin(self.score_spin)
 
         minus_btn = QPushButton("-")
         minus_btn.setFixedWidth(24)
@@ -313,6 +326,7 @@ class PlayerEditRow(QWidget):
         layout.addWidget(self.player_combo, 2)
         layout.addWidget(self.name_edit, 2)
         layout.addWidget(self.elo_edit)
+        layout.addWidget(self.hide_elo_check)
         layout.addWidget(self.country_combo, 2)
         layout.addWidget(self.faction_combo, 2)
         layout.addWidget(self.color_combo)
@@ -324,6 +338,7 @@ class PlayerEditRow(QWidget):
         self.player_combo.currentIndexChanged.connect(self.on_player_combo_changed)
         self.name_edit.textChanged.connect(self.changed.emit)
         self.elo_edit.textChanged.connect(self.changed.emit)
+        self.hide_elo_check.toggled.connect(self.changed.emit)
         self.country_combo.currentIndexChanged.connect(self.changed.emit)
         self.faction_combo.currentIndexChanged.connect(self.changed.emit)
         self.color_combo.currentIndexChanged.connect(self.changed.emit)
@@ -365,14 +380,15 @@ class PlayerEditRow(QWidget):
 
     def to_player(self) -> Player:
         manual_elo = self.elo_edit.text().strip()
+        elo = None if self.hide_elo_check.isChecked() else (int(manual_elo) if manual_elo else self._elo)
         return Player(
             name=self.name_edit.text().strip() or "Player",
             country_code=combo_get_data(self.country_combo) or "UA",
-            faction_key=combo_get_data(self.faction_combo) or "usa",
+            faction_key=combo_get_data(self.faction_combo) or NO_FACTION_KEY,
             team=self.fixed_team if self.fixed_team is not None else 0,
             score=self.score_spin.value() if self.show_score else 0,
             division=self._division,
-            elo=int(manual_elo) if manual_elo else self._elo,
+            elo=elo,
             color_key=combo_get_data(self.color_combo),
         )
 
@@ -538,6 +554,10 @@ class ControlPanel(QWidget):
         self.icon_variant_combo.currentIndexChanged.connect(self.on_icon_variant_changed)
         row1.addWidget(self.icon_variant_combo)
 
+        icon_size_row, self.icon_size_spin = _build_stepper_row("Розмір іконки, px:", 24, 64, 38)
+        self.icon_size_spin.valueChanged.connect(self.on_icon_size_changed)
+        row1.addLayout(icon_size_row)
+
         row1.addWidget(QLabel("Маркер кольору:"))
         self.color_style_combo = QComboBox()
         for key, label in COLOR_STYLE_LABELS.items():
@@ -558,6 +578,20 @@ class ControlPanel(QWidget):
         self.show_title_check.setChecked(True)
         self.show_title_check.toggled.connect(self.on_show_title_changed)
         row2.addWidget(self.show_title_check)
+
+        self.show_elo_check = QCheckBox("Показувати ELO")
+        self.show_elo_check.setChecked(True)
+        self.show_elo_check.setToolTip("Прибирає ELO з оверлею у всіх гравців одразу.")
+        self.show_elo_check.toggled.connect(self.on_show_elo_changed)
+        row2.addWidget(self.show_elo_check)
+
+        self.show_score_check = QCheckBox("Показувати рахунок")
+        self.show_score_check.setChecked(True)
+        self.show_score_check.setToolTip(
+            "Ховає загальний рахунок команд і особистий рахунок гравців у FFA."
+        )
+        self.show_score_check.toggled.connect(self.on_show_score_changed)
+        row2.addWidget(self.show_score_check)
 
         self.always_on_top_check = QCheckBox("Поверх усіх вікон")
         self.always_on_top_check.setToolTip(
@@ -822,7 +856,7 @@ class ControlPanel(QWidget):
 
         spin = QSpinBox()
         spin.setRange(0, 999)
-        _button_only_spin(spin)
+        _configure_spin(spin)
 
         minus_btn = QPushButton("-")
         minus_btn.setFixedWidth(24)
@@ -990,6 +1024,10 @@ class ControlPanel(QWidget):
         self.scorebar.set_icon_variant(variant)
         self.autosave()
 
+    def on_icon_size_changed(self, value: int):
+        self.scorebar.set_icon_size(value)
+        self.autosave()
+
     def on_always_on_top_changed(self, checked: bool):
         self.scorebar.set_always_on_top(checked)
         self.autosave()
@@ -1002,6 +1040,14 @@ class ControlPanel(QWidget):
         self.scorebar.set_title_visible(checked)
         self.autosave()
 
+    def on_show_elo_changed(self, checked: bool):
+        self.scorebar.set_elo_visible(checked)
+        self.autosave()
+
+    def on_show_score_changed(self, checked: bool):
+        self.scorebar.set_score_visible(checked)
+        self.autosave()
+
     # ------------------------------------------------------------------
     def _build_config_dict(self) -> dict:
         return {
@@ -1011,9 +1057,12 @@ class ControlPanel(QWidget):
             "map_name": self.map_edit.text(),
             "theme": self.theme_combo.currentData(),
             "icon_variant": self.icon_variant_combo.currentData(),
+            "icon_size": self.icon_size_spin.value(),
             "always_on_top": self.always_on_top_check.isChecked(),
             "title": self.title_edit.text(),
             "show_title": self.show_title_check.isChecked(),
+            "show_elo": self.show_elo_check.isChecked(),
+            "show_score": self.show_score_check.isChecked(),
             "score_font_size": self.score_font_spin.value(),
             "name_font_size": self.name_font_spin.value(),
             "title_font_size": self.title_font_spin.value(),
@@ -1052,6 +1101,8 @@ class ControlPanel(QWidget):
             if idx >= 0:
                 self.icon_variant_combo.setCurrentIndex(idx)
 
+        self.icon_size_spin.setValue(data.get("icon_size", 38))
+
         self.always_on_top_check.setChecked(bool(data.get("always_on_top", False)))
 
         self.title_edit.setText(data.get("title", "SCOREBAR"))
@@ -1059,6 +1110,14 @@ class ControlPanel(QWidget):
         show_title = bool(data.get("show_title", True))
         self.show_title_check.setChecked(show_title)
         self.scorebar.set_title_visible(show_title)
+
+        show_elo = bool(data.get("show_elo", True))
+        self.show_elo_check.setChecked(show_elo)
+        self.scorebar.set_elo_visible(show_elo)
+
+        show_score = bool(data.get("show_score", True))
+        self.show_score_check.setChecked(show_score)
+        self.scorebar.set_score_visible(show_score)
 
         self.score_font_spin.setValue(data.get("score_font_size", 20))
         self.name_font_spin.setValue(data.get("name_font_size", 11))

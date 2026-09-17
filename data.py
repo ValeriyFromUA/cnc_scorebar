@@ -70,8 +70,15 @@ FACTIONS: list[Faction] = [
 
 FACTIONS_BY_KEY: dict[str, Faction] = {f.key: f for f in FACTIONS}
 
+# Сентинел для "без генерала" — окремий від "" (яке combo_get_data
+# повертає при відсутності вибору в комбобоксі), щоб не сплутати навмисну
+# відсутність генерала з помилкою читання комбобокса.
+NO_FACTION_KEY = "none"
 
-def get_faction(key: str) -> Faction:
+
+def get_faction(key: str) -> Faction | None:
+    if key == NO_FACTION_KEY:
+        return None
     return FACTIONS_BY_KEY.get(key, FACTIONS[0])
 
 
@@ -147,6 +154,10 @@ _OTHER_COUNTRIES: list[Country] = [
     Country("GE", "Georgia"),
     Country("AM", "Armenia"),
     Country("AZ", "Azerbaijan"),
+    Country("IR", "Iran"),
+    Country("PS", "Palestine"),
+    Country("SY", "Syria"),
+    Country("LB", "Lebanon"),
 ]
 
 # Порядок у комбобоксі: Україна завжди перша, піратський прапор другий (це
@@ -208,7 +219,7 @@ class Player:
     color_key: str | None = None  # ключ кольору гравця (див. PLAYER_COLORS), None = без маркера
 
     @property
-    def faction(self) -> Faction:
+    def faction(self) -> Faction | None:
         return get_faction(self.faction_key)
 
     @property

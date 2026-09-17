@@ -393,12 +393,12 @@ class FactionBadge(QWidget):
     малювання. Колірний варіант (blue/orng/slvr) спільний для всього
     скорбару, див. ScorebarWindow.set_icon_variant()."""
 
-    def __init__(self, theme: Theme, icon_variant: str = "blue", parent=None):
+    def __init__(self, theme: Theme, icon_variant: str = "blue", icon_size: int = 38, parent=None):
         super().__init__(parent)
         self.theme = theme
         self.faction: Faction | None = None
         self.icon_variant = icon_variant
-        self.setFixedSize(38, 38)
+        self.setFixedSize(icon_size, icon_size)
 
     def set_theme(self, theme: Theme):
         self.theme = theme
@@ -409,9 +409,13 @@ class FactionBadge(QWidget):
             self.icon_variant = variant
             self.update()
 
-    def set_faction(self, faction: Faction):
+    def set_icon_size(self, size: int):
+        self.setFixedSize(size, size)
+        self.update()
+
+    def set_faction(self, faction: Faction | None):
         self.faction = faction
-        self.setToolTip(faction.name)
+        self.setToolTip(faction.name if faction else "")
         self.update()
 
     def paintEvent(self, event):
@@ -499,6 +503,7 @@ class PlayerRow(QWidget):
         icon_variant: str = "blue",
         name_font_size: int = 11,
         elo_font_size: int = 13,
+        icon_size: int = 38,
         color_style: str = "triangle",
         parent=None,
     ):
@@ -537,7 +542,7 @@ class PlayerRow(QWidget):
         # Ширина поля виставляється в _apply_fonts за метриками шрифту.
         self.rating_label = QLabel("")
         self.rating_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.badge = FactionBadge(theme, icon_variant)
+        self.badge = FactionBadge(theme, icon_variant, icon_size)
         self.score_label = QLabel("0")
         self.score_label.setFixedWidth(28)
         self.score_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -618,6 +623,15 @@ class PlayerRow(QWidget):
     def set_elo_font_size(self, size: int):
         self.elo_font_size = size
         self._apply_fonts()
+
+    def set_icon_size(self, size: int):
+        self.badge.set_icon_size(size)
+
+    def set_elo_visible(self, visible: bool):
+        self.rating_label.setVisible(visible)
+
+    def set_score_visible(self, visible: bool):
+        self.score_label.setVisible(visible)
 
     def set_color_style(self, style: str):
         self.color_style = style
@@ -725,6 +739,9 @@ class TeamPanel(TacticalPanel):
         self.rows: list[PlayerRow] = []
         self.name_font_size = 11
         self.elo_font_size = 13
+        self.icon_size = 38
+        self.elo_visible = True
+        self.score_visible = True
         self.row_spacing = 4
         self.v_padding = 6
         self.color_style = "triangle"
@@ -762,6 +779,21 @@ class TeamPanel(TacticalPanel):
         for row in self.rows:
             row.set_elo_font_size(size)
 
+    def set_icon_size(self, size: int):
+        self.icon_size = size
+        for row in self.rows:
+            row.set_icon_size(size)
+
+    def set_elo_visible(self, visible: bool):
+        self.elo_visible = visible
+        for row in self.rows:
+            row.set_elo_visible(visible)
+
+    def set_score_visible(self, visible: bool):
+        self.score_visible = visible
+        for row in self.rows:
+            row.set_score_visible(visible)
+
     def set_color_style(self, style: str):
         self.color_style = style
         for row in self.rows:
@@ -793,8 +825,10 @@ class TeamPanel(TacticalPanel):
                 icon_variant=self.icon_variant,
                 name_font_size=self.name_font_size,
                 elo_font_size=self.elo_font_size,
+                icon_size=self.icon_size,
                 color_style=self.color_style,
             )
+            row.set_elo_visible(self.elo_visible)
             self.rows.append(row)
             self.rows_layout.addWidget(row)
         while len(self.rows) > n:
@@ -879,6 +913,9 @@ class FFAPanel(TacticalPanel):
         self.rows: list[PlayerRow] = []
         self.name_font_size = 11
         self.elo_font_size = 13
+        self.icon_size = 38
+        self.elo_visible = True
+        self.score_visible = True
         self.row_spacing = 4
         self.v_padding = 6
         self.color_style = "triangle"
@@ -916,6 +953,21 @@ class FFAPanel(TacticalPanel):
         for row in self.rows:
             row.set_elo_font_size(size)
 
+    def set_icon_size(self, size: int):
+        self.icon_size = size
+        for row in self.rows:
+            row.set_icon_size(size)
+
+    def set_elo_visible(self, visible: bool):
+        self.elo_visible = visible
+        for row in self.rows:
+            row.set_elo_visible(visible)
+
+    def set_score_visible(self, visible: bool):
+        self.score_visible = visible
+        for row in self.rows:
+            row.set_score_visible(visible)
+
     def set_color_style(self, style: str):
         self.color_style = style
         for row in self.rows:
@@ -944,8 +996,11 @@ class FFAPanel(TacticalPanel):
                 icon_variant=self.icon_variant,
                 name_font_size=self.name_font_size,
                 elo_font_size=self.elo_font_size,
+                icon_size=self.icon_size,
                 color_style=self.color_style,
             )
+            row.set_elo_visible(self.elo_visible)
+            row.set_score_visible(self.score_visible)
             self.rows.append(row)
             self.rows_layout.addWidget(row)
         while len(self.rows) > n:
@@ -1017,6 +1072,7 @@ class ScorebarWindow(QWidget):
         self._topmost_timer: QTimer | None = None
         self._solid_bg = False
         self._solid_bg_color = "#000000"
+        self.score_visible = True
 
         # Заголовок вікна — щоб оверлей легко впізнавався в списку джерел
         # "Window Capture" в OBS.
@@ -1157,6 +1213,20 @@ class ScorebarWindow(QWidget):
         for panel in (self.left_panel, self.right_panel, self.ffa_panel):
             panel.set_elo_font_size(size)
 
+    def set_icon_size(self, size: int):
+        for panel in (self.left_panel, self.right_panel, self.ffa_panel):
+            panel.set_icon_size(size)
+
+    def set_elo_visible(self, visible: bool):
+        for panel in (self.left_panel, self.right_panel, self.ffa_panel):
+            panel.set_elo_visible(visible)
+
+    def set_score_visible(self, visible: bool):
+        self.score_visible = visible
+        for panel in (self.left_panel, self.right_panel, self.ffa_panel):
+            panel.set_score_visible(visible)
+        self.center_panel.setVisible(not self.state.ffa and visible)
+
     def set_row_spacing(self, spacing: int):
         for panel in (self.left_panel, self.right_panel, self.ffa_panel):
             panel.set_row_spacing(spacing)
@@ -1180,7 +1250,7 @@ class ScorebarWindow(QWidget):
     def refresh(self):
         ffa = self.state.ffa
         self.left_panel.setVisible(not ffa)
-        self.center_panel.setVisible(not ffa)
+        self.center_panel.setVisible(not ffa and self.score_visible)
         self.right_panel.setVisible(not ffa)
         self.ffa_panel.setVisible(ffa)
 
