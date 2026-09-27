@@ -543,6 +543,10 @@ class ControlPanel(QWidget):
         # разом із панеллю, а не лишаємо висіти окремим процесом/вікном.
         self.scorebar.close()
         super().closeEvent(event)
+        # Явний quit(): якщо десь лишився "привид"-вікно (напр. нативна
+        # macOS-панель кольору), Qt інакше не вважає останнє вікно закритим
+        # і процес python ніколи не завершується сам.
+        QApplication.instance().quit()
 
     # ------------------------------------------------------------------
     def fetch_remote_players(self):
@@ -810,7 +814,7 @@ class ControlPanel(QWidget):
         self.panel_padding_spin.valueChanged.connect(self.on_panel_padding_changed)
         layout.addLayout(padding_row)
 
-        spread_row, self.team_spread_spin = _build_slider_row("Розсунути команди, px:", 0, 400, 0)
+        spread_row, self.team_spread_spin = _build_slider_row("Розсунути команди, px:", 0, 1200, 0)
         self.team_spread_spin.setToolTip(
             "Розсуває панелі команд від центру до країв екрана (лише командний режим). "
             "Рахунок і заголовок лишаються по центру."
@@ -1225,8 +1229,15 @@ class ControlPanel(QWidget):
         self.scorebar.set_custom_theme(theme)
 
     def pick_custom_bg(self):
+        # DontUseNativeDialog: нативна NSColorPanel на macOS спільна для
+        # всього застосунку і персистентна — після вибору кольору вона не
+        # завжди коректно звільняється, лишаючись "привидом", який тримає
+        # процес живим (Qt не бачить останнє вікно закритим).
         color = QColorDialog.getColor(
-            self._custom_bg_color, self, "Колір фону", QColorDialog.ColorDialogOption.ShowAlphaChannel
+            self._custom_bg_color,
+            self,
+            "Колір фону",
+            QColorDialog.ColorDialogOption.ShowAlphaChannel | QColorDialog.ColorDialogOption.DontUseNativeDialog,
         )
         if not color.isValid():
             return
@@ -1245,7 +1256,9 @@ class ControlPanel(QWidget):
         self.autosave()
 
     def pick_custom_border(self):
-        color = QColorDialog.getColor(self._custom_border_color, self, "Колір рамки")
+        color = QColorDialog.getColor(
+            self._custom_border_color, self, "Колір рамки", QColorDialog.ColorDialogOption.DontUseNativeDialog
+        )
         if not color.isValid():
             return
         self._custom_border_color = color
@@ -1254,7 +1267,9 @@ class ControlPanel(QWidget):
         self.autosave()
 
     def pick_custom_text(self):
-        color = QColorDialog.getColor(self._custom_text_color, self, "Колір тексту")
+        color = QColorDialog.getColor(
+            self._custom_text_color, self, "Колір тексту", QColorDialog.ColorDialogOption.DontUseNativeDialog
+        )
         if not color.isValid():
             return
         self._custom_text_color = color
