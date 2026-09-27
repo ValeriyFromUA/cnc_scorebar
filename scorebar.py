@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -69,6 +70,21 @@ def parse_color(value: str) -> QColor:
     return QColor(value)
 
 
+def _apply_marker_glow(widget: QWidget, color_hex: str | None, glow: int):
+    """Світіння кольором самого маркера гравця (не кольором теми) — для
+    стилів "Трикутник"/"Лінія під ніком", де маркер це окремий віджет
+    (ColorTag / QLabel ніка), можна повісити звичайний
+    QGraphicsDropShadowEffect. glow=0 — світіння вимкнено."""
+    if glow > 0 and color_hex:
+        effect = QGraphicsDropShadowEffect(widget)
+        effect.setColor(QColor(color_hex))
+        effect.setBlurRadius(glow)
+        effect.setOffset(0, 0)
+        widget.setGraphicsEffect(effect)
+    else:
+        widget.setGraphicsEffect(None)
+
+
 # --------------------------------------------------------------------------
 # Базова панель з кутовими засічками (tactical notch frame)
 # --------------------------------------------------------------------------
@@ -83,6 +99,15 @@ class TacticalPanel(QFrame):
         # артефакти або просідання FPS.
         self._glow_enabled = True
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        # Vertical Minimum-policy: у row_layout ScorebarWindow ліва/центральна/
+        # права панелі стоять поруч у QHBoxLayout і за дефолтної Preferred-
+        # політики Qt дозволяє стискати їх нижче за sizeHint, коли їм не
+        # вистачає місця (напр. TeamPanel хоче вирости через "Рамка до
+        # ніків", а сусідні панелі це місце не дають) — тоді замість росту
+        # вікна стискається сам вміст (рядки гравців/маркер кольору). Minimum
+        # робить sizeHint твердою нижньою межею: панель може рости, але
+        # ніколи не стискається вміст через власний відступ.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         self._apply_glow()
 
     def _apply_glow(self):
@@ -393,12 +418,12 @@ class FactionBadge(QWidget):
     малювання. Колірний варіант (blue/orng/slvr) спільний для всього
     скорбару, див. ScorebarWindow.set_icon_variant()."""
 
-    def __init__(self, theme: Theme, icon_variant: str = "blue", parent=None):
+    def __init__(self, theme: Theme, icon_variant: str = "blue", icon_size: int = 38, parent=None):
         super().__init__(parent)
         self.theme = theme
         self.faction: Faction | None = None
         self.icon_variant = icon_variant
-        self.setFixedSize(38, 38)
+        self.setFixedSize(icon_size, icon_size)
 
     def set_theme(self, theme: Theme):
         self.theme = theme
@@ -409,9 +434,13 @@ class FactionBadge(QWidget):
             self.icon_variant = variant
             self.update()
 
-    def set_faction(self, faction: Faction):
+    def set_icon_size(self, size: int):
+        self.setFixedSize(size, size)
+        self.update()
+
+    def set_faction(self, faction: Faction | None):
         self.faction = faction
-        self.setToolTip(faction.name)
+        self.setToolTip(faction.name if faction else "")
         self.update()
 
     def paintEvent(self, event):
@@ -499,6 +528,7 @@ class PlayerRow(QWidget):
         icon_variant: str = "blue",
         name_font_size: int = 11,
         elo_font_size: int = 13,
+        icon_size: int = 38,
         color_style: str = "triangle",
         parent=None,
     ):
@@ -511,6 +541,15 @@ class PlayerRow(QWidget):
         self.elo_font_size = elo_font_size
         self.color_style = color_style
         self._color_hex: str | None = None
+        self.marker_glow = 0
+
+        # Fixed по вертикалі: без цього QVBoxLayout панелі (rows_layout)
+        # розтягує/стискає рядок гравця (і його маркер кольору), щоб
+        # заповнити ввесь бюджет висоти панелі — тому зміна "Рамка до
+        # ніків" (лише зовнішній відступ панелі) хаотично міняла розмір
+        # маркера замість того, щоб лишати рядок незмінним, а зайвий/
+        # бракуючий простір — просто порожнім полем навколо нього.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         layout = QHBoxLayout(self)
         # Вертикальних внутрішніх полів немає навмисно: відстань між рядками
@@ -537,7 +576,7 @@ class PlayerRow(QWidget):
         # Ширина поля виставляється в _apply_fonts за метриками шрифту.
         self.rating_label = QLabel("")
         self.rating_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.badge = FactionBadge(theme, icon_variant)
+        self.badge = FactionBadge(theme, icon_variant, icon_size)
         self.score_label = QLabel("0")
         self.score_label.setFixedWidth(28)
         self.score_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -572,6 +611,11 @@ class PlayerRow(QWidget):
                 layout.addWidget(self.score_label)
 
         self._apply_fonts()
+        # Твердий поверх (не sizePolicy-підказка, а справжній minimumHeight):
+        # без цього "Рамка до ніків" (v_padding панелі) під тиском спільної
+        # висоти row_layout здатна стискати сам рядок гравця (і його маркер
+        # кольору) нижче за розмір іконки замість того, щоб рости вікно.
+        self.setMinimumHeight(icon_size)
 
     def _name_stylesheet(self) -> str:
         style = f"color: {self.theme.text_primary}; background: transparent;"
@@ -619,8 +663,22 @@ class PlayerRow(QWidget):
         self.elo_font_size = size
         self._apply_fonts()
 
+    def set_icon_size(self, size: int):
+        self.badge.set_icon_size(size)
+        self.setMinimumHeight(size)
+
+    def set_elo_visible(self, visible: bool):
+        self.rating_label.setVisible(visible)
+
+    def set_score_visible(self, visible: bool):
+        self.score_label.setVisible(visible)
+
     def set_color_style(self, style: str):
         self.color_style = style
+        self._apply_color_marker()
+
+    def set_marker_glow(self, value: int):
+        self.marker_glow = value
         self._apply_color_marker()
 
     def _apply_color_marker(self):
@@ -630,6 +688,18 @@ class PlayerRow(QWidget):
         self.color_tag.set_style(self.color_style)
         self.color_tag.set_color(self._color_hex, point_right=not self.mirrored)
         self.name_label.setStyleSheet(self._name_stylesheet())
+        # Світіння кольором маркера — лише для стилів, де маркер є окремим
+        # віджетом; "edge" малюється вручну панеллю (_draw_edge_color_bands),
+        # для нього glow застосовується там самою панеллю, не тут.
+        if self.color_style == "triangle":
+            _apply_marker_glow(self.color_tag, self._color_hex, self.marker_glow)
+            _apply_marker_glow(self.name_label, None, 0)
+        elif self.color_style == "underline":
+            _apply_marker_glow(self.name_label, self._color_hex, self.marker_glow)
+            _apply_marker_glow(self.color_tag, None, 0)
+        else:
+            _apply_marker_glow(self.color_tag, None, 0)
+            _apply_marker_glow(self.name_label, None, 0)
 
     def set_name_width(self, width: int):
         self.name_label.setFixedWidth(max(width, self.MIN_NAME_WIDTH))
@@ -669,13 +739,35 @@ class PlayerRow(QWidget):
             self.rank_label.setText(f"{rank}." if rank else "")
 
 
-def _draw_edge_color_bands(panel: TacticalPanel, rows: list[PlayerRow], left_side: bool):
+def _build_edge_triangle(w: float, y0: float, row_h: float, apex_x: float, left_side: bool, expand: float = 0.0) -> QPainterPath:
+    """Той самий трикутник "зафарбованого краю", розширений назовні на
+    `expand` px в усі боки — використовується і для суцільної заливки
+    (expand=0), і для шарів світіння (зростаючий expand + спадна альфа)."""
+    triangle = QPainterPath()
+    if left_side:
+        triangle.moveTo(-expand, y0 + row_h * 0.2 - expand)
+        triangle.lineTo(-expand, y0 + row_h * 0.8 + expand)
+        triangle.lineTo(apex_x + expand, y0 + row_h * 0.5)
+    else:
+        triangle.moveTo(w + expand, y0 + row_h * 0.2 - expand)
+        triangle.lineTo(w + expand, y0 + row_h * 0.8 + expand)
+        triangle.lineTo(apex_x - expand, y0 + row_h * 0.5)
+    triangle.closeSubpath()
+    return triangle
+
+
+def _draw_edge_color_bands(panel: TacticalPanel, rows: list[PlayerRow], left_side: bool, glow: int = 0):
     """Режим "зафарбований край": той самий трикутник-маркер гравця, але
     його основа лежить на самому краю картки, а вершина — на звичному місці
     маркера (вістрям у бік гравця). Малюється панеллю (а не
     віджетом-маркером), бо лише панель може зафарбувати зону своїх
     внутрішніх полів; кліп по силуету рамки, щоб трикутник повторював форму
-    картки (зрізані кути тощо)."""
+    картки (зрізані кути тощо).
+
+    glow > 0: тут немає окремого віджета під QGraphicsDropShadowEffect (усі
+    гравці малюються одним painter'ом за один прохід), тому світіння
+    імітується вручну — кілька дедалі більших копій трикутника кольором
+    гравця зі спадною прозорістю "під" суцільною заливкою."""
     w, h = panel.width(), panel.height()
     n = max(min(panel.theme.notch, w // 4, h // 4), 0)
     path = panel._panel_path(w, h, n)
@@ -689,20 +781,17 @@ def _draw_edge_color_bands(panel: TacticalPanel, rows: list[PlayerRow], left_sid
         geo = row.geometry()
         tag_pos = row.color_tag.mapTo(panel, QPoint(0, 0))
         y0, row_h = geo.y(), geo.height()
+        apex_x = tag_pos.x() + row.color_tag.width() if left_side else tag_pos.x()
+        if glow > 0:
+            steps = 4
+            for i in range(steps, 0, -1):
+                glow_color = QColor(row._color_hex)
+                glow_color.setAlpha(int(70 * (i / steps)))
+                painter.setBrush(glow_color)
+                expand = glow * (i / steps)
+                painter.drawPath(_build_edge_triangle(w, y0, row_h, apex_x, left_side, expand))
         painter.setBrush(QColor(row._color_hex))
-        triangle = QPainterPath()
-        if left_side:
-            apex_x = tag_pos.x() + row.color_tag.width()
-            triangle.moveTo(0, y0 + row_h * 0.2)
-            triangle.lineTo(0, y0 + row_h * 0.8)
-            triangle.lineTo(apex_x, y0 + row_h * 0.5)
-        else:
-            apex_x = tag_pos.x()
-            triangle.moveTo(w, y0 + row_h * 0.2)
-            triangle.lineTo(w, y0 + row_h * 0.8)
-            triangle.lineTo(apex_x, y0 + row_h * 0.5)
-        triangle.closeSubpath()
-        painter.drawPath(triangle)
+        painter.drawPath(_build_edge_triangle(w, y0, row_h, apex_x, left_side))
     # Рамку домальовуємо поверх смуг, щоб контур картки лишався чітким.
     painter.setClipping(False)
     pen = QPen(parse_color(panel.theme.border))
@@ -725,9 +814,13 @@ class TeamPanel(TacticalPanel):
         self.rows: list[PlayerRow] = []
         self.name_font_size = 11
         self.elo_font_size = 13
+        self.icon_size = 38
+        self.elo_visible = True
+        self.score_visible = True
         self.row_spacing = 4
         self.v_padding = 6
         self.color_style = "triangle"
+        self.marker_glow = 0
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(theme.notch + 4, self.v_padding, theme.notch + 4, self.v_padding)
@@ -762,16 +855,37 @@ class TeamPanel(TacticalPanel):
         for row in self.rows:
             row.set_elo_font_size(size)
 
+    def set_icon_size(self, size: int):
+        self.icon_size = size
+        for row in self.rows:
+            row.set_icon_size(size)
+
+    def set_elo_visible(self, visible: bool):
+        self.elo_visible = visible
+        for row in self.rows:
+            row.set_elo_visible(visible)
+
+    def set_score_visible(self, visible: bool):
+        self.score_visible = visible
+        for row in self.rows:
+            row.set_score_visible(visible)
+
     def set_color_style(self, style: str):
         self.color_style = style
         for row in self.rows:
             row.set_color_style(style)
         self.update()
 
+    def set_marker_glow(self, value: int):
+        self.marker_glow = value
+        for row in self.rows:
+            row.set_marker_glow(value)
+        self.update()
+
     def paintEvent(self, event):
         super().paintEvent(event)
         if self.color_style == "edge":
-            _draw_edge_color_bands(self, self.rows, left_side=(self.side == "left"))
+            _draw_edge_color_bands(self, self.rows, left_side=(self.side == "left"), glow=self.marker_glow)
 
     def set_row_spacing(self, spacing: int):
         self.row_spacing = spacing
@@ -793,8 +907,10 @@ class TeamPanel(TacticalPanel):
                 icon_variant=self.icon_variant,
                 name_font_size=self.name_font_size,
                 elo_font_size=self.elo_font_size,
+                icon_size=self.icon_size,
                 color_style=self.color_style,
             )
+            row.set_elo_visible(self.elo_visible)
             self.rows.append(row)
             self.rows_layout.addWidget(row)
         while len(self.rows) > n:
@@ -879,9 +995,13 @@ class FFAPanel(TacticalPanel):
         self.rows: list[PlayerRow] = []
         self.name_font_size = 11
         self.elo_font_size = 13
+        self.icon_size = 38
+        self.elo_visible = True
+        self.score_visible = True
         self.row_spacing = 4
         self.v_padding = 6
         self.color_style = "triangle"
+        self.marker_glow = 0
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(theme.notch + 4, self.v_padding, theme.notch + 4, self.v_padding)
@@ -916,16 +1036,37 @@ class FFAPanel(TacticalPanel):
         for row in self.rows:
             row.set_elo_font_size(size)
 
+    def set_icon_size(self, size: int):
+        self.icon_size = size
+        for row in self.rows:
+            row.set_icon_size(size)
+
+    def set_elo_visible(self, visible: bool):
+        self.elo_visible = visible
+        for row in self.rows:
+            row.set_elo_visible(visible)
+
+    def set_score_visible(self, visible: bool):
+        self.score_visible = visible
+        for row in self.rows:
+            row.set_score_visible(visible)
+
     def set_color_style(self, style: str):
         self.color_style = style
         for row in self.rows:
             row.set_color_style(style)
         self.update()
 
+    def set_marker_glow(self, value: int):
+        self.marker_glow = value
+        for row in self.rows:
+            row.set_marker_glow(value)
+        self.update()
+
     def paintEvent(self, event):
         super().paintEvent(event)
         if self.color_style == "edge":
-            _draw_edge_color_bands(self, self.rows, left_side=True)
+            _draw_edge_color_bands(self, self.rows, left_side=True, glow=self.marker_glow)
 
     def set_row_spacing(self, spacing: int):
         self.row_spacing = spacing
@@ -944,8 +1085,11 @@ class FFAPanel(TacticalPanel):
                 icon_variant=self.icon_variant,
                 name_font_size=self.name_font_size,
                 elo_font_size=self.elo_font_size,
+                icon_size=self.icon_size,
                 color_style=self.color_style,
             )
+            row.set_elo_visible(self.elo_visible)
+            row.set_score_visible(self.score_visible)
             self.rows.append(row)
             self.rows_layout.addWidget(row)
         while len(self.rows) > n:
@@ -1017,6 +1161,7 @@ class ScorebarWindow(QWidget):
         self._topmost_timer: QTimer | None = None
         self._solid_bg = False
         self._solid_bg_color = "#000000"
+        self.score_visible = True
 
         # Заголовок вікна — щоб оверлей легко впізнавався в списку джерел
         # "Window Capture" в OBS.
@@ -1059,8 +1204,21 @@ class ScorebarWindow(QWidget):
         self.right_panel = TeamPanel(self.theme, "right", self.icon_variant)
         self.ffa_panel = FFAPanel(self.theme, self.icon_variant)
 
+        # Невидимі розпірники між командами і центром — "Розсунути команди"
+        # у панелі керування розтягує їх, підштовхуючи ліву/праву панель до
+        # країв екрана. Вікно має SetFixedSize і саме перецентровується в
+        # resizeEvent, тож ширші розпірники автоматично розсувають бічні
+        # панелі симетрично від центру, а не просто ростуть вправо.
+        self.left_gap = QWidget()
+        self.right_gap = QWidget()
+        self.left_gap.setFixedWidth(0)
+        self.right_gap.setFixedWidth(0)
+        self.team_spread = 0
+
         self.row_layout.addWidget(self.left_panel)
+        self.row_layout.addWidget(self.left_gap)
         self.row_layout.addWidget(self.center_panel)
+        self.row_layout.addWidget(self.right_gap)
         self.row_layout.addWidget(self.right_panel)
         self.row_layout.addWidget(self.ffa_panel)
 
@@ -1117,7 +1275,13 @@ class ScorebarWindow(QWidget):
         self.refresh()
 
     def set_theme(self, theme_key: str):
-        self.theme = get_theme(theme_key)
+        self._apply_theme(get_theme(theme_key))
+
+    def set_custom_theme(self, theme: Theme):
+        self._apply_theme(theme)
+
+    def _apply_theme(self, theme: Theme):
+        self.theme = theme
         self.left_panel.set_theme(self.theme)
         self.right_panel.set_theme(self.theme)
         self.center_panel.set_theme(self.theme)
@@ -1147,6 +1311,10 @@ class ScorebarWindow(QWidget):
         for panel in (self.left_panel, self.right_panel, self.ffa_panel):
             panel.set_color_style(style)
 
+    def set_marker_glow(self, value: int):
+        for panel in (self.left_panel, self.right_panel, self.ffa_panel):
+            panel.set_marker_glow(value)
+
     def set_name_font_size(self, size: int):
         for panel in (self.left_panel, self.right_panel, self.ffa_panel):
             panel.set_name_font_size(size)
@@ -1156,6 +1324,20 @@ class ScorebarWindow(QWidget):
     def set_elo_font_size(self, size: int):
         for panel in (self.left_panel, self.right_panel, self.ffa_panel):
             panel.set_elo_font_size(size)
+
+    def set_icon_size(self, size: int):
+        for panel in (self.left_panel, self.right_panel, self.ffa_panel):
+            panel.set_icon_size(size)
+
+    def set_elo_visible(self, visible: bool):
+        for panel in (self.left_panel, self.right_panel, self.ffa_panel):
+            panel.set_elo_visible(visible)
+
+    def set_score_visible(self, visible: bool):
+        self.score_visible = visible
+        for panel in (self.left_panel, self.right_panel, self.ffa_panel):
+            panel.set_score_visible(visible)
+        self.center_panel.setVisible(not self.state.ffa and visible)
 
     def set_row_spacing(self, spacing: int):
         for panel in (self.left_panel, self.right_panel, self.ffa_panel):
@@ -1180,8 +1362,10 @@ class ScorebarWindow(QWidget):
     def refresh(self):
         ffa = self.state.ffa
         self.left_panel.setVisible(not ffa)
-        self.center_panel.setVisible(not ffa)
+        self.center_panel.setVisible(not ffa and self.score_visible)
         self.right_panel.setVisible(not ffa)
+        self.left_gap.setVisible(not ffa)
+        self.right_gap.setVisible(not ffa)
         self.ffa_panel.setVisible(ffa)
 
         if ffa:
@@ -1226,6 +1410,11 @@ class ScorebarWindow(QWidget):
     def set_position(self, position_key: str):
         self.position_key = position_key
         self.reposition()
+
+    def set_team_spread(self, value: int):
+        self.team_spread = value
+        self.left_gap.setFixedWidth(value)
+        self.right_gap.setFixedWidth(value)
 
     def set_screen_index(self, index: int):
         """Монітор, на якому показується оверлей (0 = перший). Працює і на

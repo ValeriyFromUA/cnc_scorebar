@@ -277,6 +277,54 @@ def get_theme(key: str) -> Theme:
     return THEMES.get(key, THEMES[DEFAULT_THEME_KEY])
 
 
+# Українські назви для Theme.shape — використовується у випадаючому списку
+# "Форма" власної теми (control_panel.py), значення shape самі лишаються
+# англійськими ключами, бо це внутрішній ідентифікатор для TacticalPanel.
+SHAPE_LABELS: dict[str, str] = {
+    "notch": "Тактичний восьмикутник",
+    "brackets": "HUD-дужки",
+    "hexcut": "Візор (скошені кути)",
+    "carved": "Різьблена рамка",
+    "brushed": "Метал (градієнт)",
+    "diamond": "Ромб (карбон)",
+    "glass": "Скляний",
+    "scanline": "Скан-лінії",
+    "toxic": "Токсична рамка",
+    "concrete": "Бетон",
+    "hazard": "Смуги безпеки",
+}
+
+
+def build_custom_theme(base: Theme, bg: str, border: str, text: str, font_family: str, shape: str) -> Theme:
+    """Збирає власну тему користувача: фон/рамка/текст/шрифт/форма — з
+    контролів на вкладці Дизайн, решта полів (кольори команд, сяйво, розмір
+    засічки) успадковується від theme, обраної в дропдауні "Тема:" перед тим,
+    як увімкнули "Власна тема".
+
+    accent/accent_secondary прирівняні до text, а не до border: рахунок і
+    заголовок на оверлеї (scorebar.py) фарбуються саме через theme.accent,
+    тож колір рамки має лишатись суто контуром і не чіпати жоден текст —
+    увесь текст (ім'я/рахунок/заголовок/ELO) міняється лише полем "Текст"."""
+    return Theme(
+        key="custom",
+        name="Власна тема",
+        bg=bg,
+        bg_alt=bg,
+        border=border,
+        accent=text,
+        accent_secondary=text,
+        text_primary=text,
+        text_secondary=text,
+        team_a=base.team_a,
+        team_b=base.team_b,
+        glow=base.glow,
+        font_family=font_family,
+        notch=base.notch,
+        corner_cut=base.corner_cut,
+        shape=shape,
+    )
+
+
 # Кольоровий варіант іконки генерала (Icons/Generals/*_<variant>.png:
 # blue/orng/slvr), що вмикається за замовчуванням при виборі теми — підібраний
 # за співзвучністю з акцентним кольором теми. Користувач може перемкнути
@@ -386,5 +434,26 @@ def control_panel_qss(theme: Theme) -> str:
     }}
     QScrollArea {{
         border: none;
+    }}
+    QSlider::groove:horizontal {{
+        height: 4px;
+        background: #1c1a13;
+        border: 1px solid #4a4530;
+        border-radius: 2px;
+    }}
+    QSlider::sub-page:horizontal {{
+        background: {theme.accent};
+        border-radius: 2px;
+    }}
+    QSlider::handle:horizontal {{
+        width: 14px;
+        height: 14px;
+        margin: -6px 0;
+        background: {theme.accent};
+        border: 1px solid {theme.border};
+        border-radius: 7px;
+    }}
+    QSlider::handle:horizontal:hover {{
+        background: {text_color};
     }}
     """

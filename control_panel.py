@@ -2,10 +2,11 @@
 теми, позиція оверлею, збереження/завантаження конфігурації.
 
 Додаток не реагує на клавіатуру взагалі: жодних гарячих клавіш немає,
-з клавіатурою працює лише ця панель (текстові поля імені/карти/назви),
-а всі числові поля (рахунок, розмір команди, кількість гравців) — лише
-через кнопки інтерфейсу (+/- або стрілки спінбокса), без прямого вводу
-з клавіатури.
+з клавіатурою працює лише ця панель. Оверлей ніколи не приймає
+клавіатурний фокус (WA_ShowWithoutActivating + FocusPolicy.NoFocus,
+scorebar.py), тож фокус у полях цієї панелі — і текстових, і числових —
+ніяк не впливає на гру: усі текстові й числові поля можна редагувати як
+з клавіатури, так і кнопками +/- (де вони є).
 
 Поточний стан автоматично зберігається у CONFIG_PATH після кожної зміни
 (autosave) і підвантажується звідти при старті (autoload) — тож при
@@ -40,6 +41,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -50,21 +52,39 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSlider,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from data import COUNTRIES, FACTIONS, PLAYER_COLORS, FactionGroup, MatchState, Player
-from themes import THEMES, control_panel_qss, get_default_icon_variant, get_theme
-from scorebar import ScorebarWindow
+from data import COUNTRIES, FACTIONS, NO_FACTION_KEY, PLAYER_COLORS, FactionGroup, MatchState, Player
+from themes import SHAPE_LABELS, THEMES, build_custom_theme, control_panel_qss, get_default_icon_variant, get_theme
+from scorebar import ScorebarWindow, parse_color
 
 ICON_VARIANT_LABELS = {
     "blue": "Синя",
     "orng": "Оранжева",
     "slvr": "Срібна",
 }
+
+# Лише шрифти, які гарантовано стоять у Windows за замовчуванням — щоб
+# власна тема не показувала fallback-шрифт на машині глядача через OBS.
+STANDARD_WINDOWS_FONTS = [
+    "Segoe UI",
+    "Arial",
+    "Tahoma",
+    "Verdana",
+    "Consolas",
+    "Times New Roman",
+    "Georgia",
+    "Calibri",
+    "Courier New",
+    "Trebuchet MS",
+    "Comic Sans MS",
+    "Impact",
+]
 
 COLOR_STYLE_LABELS = {
     "triangle": "Трикутник",
@@ -134,24 +154,27 @@ class RemotePlayersFetchWorker(QObject):
         self.finished.emit(data.get("players", []))
 
 
-def _button_only_spin(spin: QSpinBox):
-    """Забороняє прямий ввід цифр з клавіатури — значення міняється лише
-    кнопками (стрілками спінбокса або сусідніми +/- кнопками)."""
-    spin.setReadOnly(True)
-    spin.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+def _configure_spin(spin: QSpinBox):
+    """Значення можна і ввести вручну з клавіатури (як ELO), і змінювати
+    сусідніми кнопками +/- (нативні стрілки спінбокса сховані — вони
+    дублювали б ці кнопки). Раніше поле було button-only через побоювання,
+    що клавіатурний фокус у панелі керування дійде до гри/оверлею, але
+    оверлей від самого початку не приймає фокус (`WA_ShowWithoutActivating`
+    + `FocusPolicy.NoFocus` на ScorebarWindow, scorebar.py), тож це
+    неможливо в принципі."""
     spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
 
 
 def _build_stepper_row(label: str, minimum: int, maximum: int, value: int) -> tuple[QHBoxLayout, QSpinBox]:
-    """Рядок "мінус / число / плюс" — зміна значення лише кнопками, в межах
-    [minimum, maximum]."""
+    """Рядок "мінус / число / плюс": значення можна і ввести вручну, і
+    змінювати кнопками, в межах [minimum, maximum]."""
     row = QHBoxLayout()
     row.addWidget(QLabel(label))
 
     spin = QSpinBox()
     spin.setRange(minimum, maximum)
     spin.setValue(value)
-    _button_only_spin(spin)
+    _configure_spin(spin)
 
     minus_btn = QPushButton("-")
     minus_btn.setFixedWidth(24)
@@ -163,6 +186,43 @@ def _build_stepper_row(label: str, minimum: int, maximum: int, value: int) -> tu
     row.addWidget(minus_btn)
     row.addWidget(spin)
     row.addWidget(plus_btn)
+    return row, spin
+
+
+class _NoWheelSlider(QSlider):
+    """QSlider, який ігнорує коліщатко миші: за замовчуванням Qt дозволяє
+    міняти значення повзунка колесом, і коли такий повзунок лежить у
+    QScrollArea (вкладки "Дизайн"/"Сумісність"), наведення на нього замість
+    прокрутки вікна випадково зсуває значення. Ігноруючи подію, віддаємо її
+    батьківському віджету — колесо завжди прокручує вікно, і більше нічого."""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+def _build_slider_row(label: str, minimum: int, maximum: int, value: int) -> tuple[QVBoxLayout, QSpinBox]:
+    """Підпис зверху, під ним повзунок + поле для ручного вводу числа поруч
+    (синхронізовані в обидва боки, в межах [minimum, maximum])."""
+    row = QVBoxLayout()
+    row.addWidget(QLabel(label))
+
+    inner = QHBoxLayout()
+    slider = _NoWheelSlider(Qt.Orientation.Horizontal)
+    slider.setRange(minimum, maximum)
+    slider.setValue(value)
+
+    spin = QSpinBox()
+    spin.setRange(minimum, maximum)
+    spin.setValue(value)
+    spin.setFixedWidth(56)
+    _configure_spin(spin)
+
+    slider.valueChanged.connect(spin.setValue)
+    spin.valueChanged.connect(slider.setValue)
+
+    inner.addWidget(slider, 1)
+    inner.addWidget(spin)
+    row.addLayout(inner)
     return row, spin
 
 
@@ -183,6 +243,9 @@ def build_country_combo() -> QComboBox:
 def build_faction_combo() -> QComboBox:
     combo = QComboBox()
     model = QStandardItemModel(combo)
+    none_item = QStandardItem("— Без генерала —")
+    none_item.setData(NO_FACTION_KEY, Qt.ItemDataRole.UserRole)
+    model.appendRow(none_item)
     for group in (FactionGroup.USA, FactionGroup.CHINA, FactionGroup.GLA):
         header = QStandardItem(f"— {group.value} —")
         header.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -295,13 +358,19 @@ class PlayerEditRow(QWidget):
         self.elo_edit.setPlaceholderText("ELO")
         self.elo_edit.setValidator(QIntValidator(0, 9999, self))
         self.elo_edit.setMaximumWidth(64)
+        # Примусово прибирає ELO саме для цього гравця, навіть якщо він
+        # обраний зі списку сайту (де скачане ELO інакше завжди підставляється
+        # назад при очищенні elo_edit).
+        self.hide_elo_check = QCheckBox("Без ELO")
+        self.hide_elo_check.setToolTip("Сховати ELO цього гравця на оверлеї")
+        self.hide_elo_check.toggled.connect(self.elo_edit.setDisabled)
         self.country_combo = build_country_combo()
         self.faction_combo = build_faction_combo()
         self.color_combo = build_color_combo()
 
         self.score_spin = QSpinBox()
         self.score_spin.setRange(0, 999)
-        _button_only_spin(self.score_spin)
+        _configure_spin(self.score_spin)
 
         minus_btn = QPushButton("-")
         minus_btn.setFixedWidth(24)
@@ -313,6 +382,7 @@ class PlayerEditRow(QWidget):
         layout.addWidget(self.player_combo, 2)
         layout.addWidget(self.name_edit, 2)
         layout.addWidget(self.elo_edit)
+        layout.addWidget(self.hide_elo_check)
         layout.addWidget(self.country_combo, 2)
         layout.addWidget(self.faction_combo, 2)
         layout.addWidget(self.color_combo)
@@ -324,6 +394,7 @@ class PlayerEditRow(QWidget):
         self.player_combo.currentIndexChanged.connect(self.on_player_combo_changed)
         self.name_edit.textChanged.connect(self.changed.emit)
         self.elo_edit.textChanged.connect(self.changed.emit)
+        self.hide_elo_check.toggled.connect(self.changed.emit)
         self.country_combo.currentIndexChanged.connect(self.changed.emit)
         self.faction_combo.currentIndexChanged.connect(self.changed.emit)
         self.color_combo.currentIndexChanged.connect(self.changed.emit)
@@ -365,14 +436,15 @@ class PlayerEditRow(QWidget):
 
     def to_player(self) -> Player:
         manual_elo = self.elo_edit.text().strip()
+        elo = None if self.hide_elo_check.isChecked() else (int(manual_elo) if manual_elo else self._elo)
         return Player(
             name=self.name_edit.text().strip() or "Player",
             country_code=combo_get_data(self.country_combo) or "UA",
-            faction_key=combo_get_data(self.faction_combo) or "usa",
+            faction_key=combo_get_data(self.faction_combo) or NO_FACTION_KEY,
             team=self.fixed_team if self.fixed_team is not None else 0,
             score=self.score_spin.value() if self.show_score else 0,
             division=self._division,
-            elo=int(manual_elo) if manual_elo else self._elo,
+            elo=elo,
             color_key=combo_get_data(self.color_combo),
         )
 
@@ -400,7 +472,7 @@ class ControlPanel(QWidget):
         super().__init__()
         self.scorebar = scorebar
         self.setWindowTitle("Scorebar — панель керування")
-        self.resize(560, 640)
+        self.resize(860, 800)
 
         self.player_rows: list[PlayerEditRow] = []
         self.remote_players: list[dict] = []
@@ -426,6 +498,7 @@ class ControlPanel(QWidget):
 
         design_tab = QWidget()
         design_layout = QVBoxLayout(design_tab)
+        design_layout.addWidget(self._build_config_group())
         design_layout.addWidget(self._build_theme_group())
         design_layout.addWidget(self._build_font_group())
         design_layout.addWidget(self._build_spacing_group())
@@ -439,9 +512,21 @@ class ControlPanel(QWidget):
         compat_layout.addWidget(self._build_effects_group())
         compat_layout.addStretch(1)
 
+        # "Дизайн"/"Сумісність" загорнуті в QScrollArea: без цього вміст цих
+        # вкладок (довший за "Гра") сам розтягував би вікно щоразу, як на
+        # них перемикались, замість того щоб вікно лишалось розміром під
+        # першу вкладку і давало прокрутку, коли вміст не влазить.
+        design_scroll = QScrollArea()
+        design_scroll.setWidgetResizable(True)
+        design_scroll.setWidget(design_tab)
+
+        compat_scroll = QScrollArea()
+        compat_scroll.setWidgetResizable(True)
+        compat_scroll.setWidget(compat_tab)
+
         self.tabs.addTab(game_tab, "Гра")
-        self.tabs.addTab(design_tab, "Дизайн")
-        self.tabs.addTab(compat_tab, "Сумісність")
+        self.tabs.addTab(design_scroll, "Дизайн")
+        self.tabs.addTab(compat_scroll, "Сумісність")
 
         root.addWidget(self.tabs)
         root.addWidget(self._build_footer())
@@ -538,14 +623,94 @@ class ControlPanel(QWidget):
         self.icon_variant_combo.currentIndexChanged.connect(self.on_icon_variant_changed)
         row1.addWidget(self.icon_variant_combo)
 
-        row1.addWidget(QLabel("Маркер кольору:"))
+        icon_size_row, self.icon_size_spin = _build_slider_row("Розмір іконки, px:", 24, 64, 38)
+        self.icon_size_spin.valueChanged.connect(self.on_icon_size_changed)
+        row1.addLayout(icon_size_row)
+        row1.addStretch(1)
+        layout.addLayout(row1)
+
+        glow_row_wrap = QHBoxLayout()
+        glow_row_wrap.addWidget(QLabel("Маркер кольору:"))
         self.color_style_combo = QComboBox()
         for key, label in COLOR_STYLE_LABELS.items():
             self.color_style_combo.addItem(label, key)
         self.color_style_combo.currentIndexChanged.connect(self.on_color_style_changed)
-        row1.addWidget(self.color_style_combo)
-        row1.addStretch(1)
-        layout.addLayout(row1)
+        glow_row_wrap.addWidget(self.color_style_combo)
+
+        glow_row, self.marker_glow_spin = _build_slider_row("Світіння маркера кольору:", 0, 30, 0)
+        self.marker_glow_spin.setToolTip(
+            "Світіння тим самим кольором, що й маркер гравця. 0 — вимкнено."
+        )
+        self.marker_glow_spin.valueChanged.connect(self.on_marker_glow_changed)
+        glow_row_wrap.addLayout(glow_row)
+        glow_row_wrap.addStretch(1)
+        layout.addLayout(glow_row_wrap)
+
+        self.custom_theme_check = QCheckBox("Власна тема")
+        self.custom_theme_check.setToolTip(
+            "Перекриває фон/рамку/текст/шрифт/форму обраної теми власними значеннями.\n"
+            "Кольори команд і сяйво лишаються від теми, обраної в дропдауні \"Тема:\"."
+        )
+        self.custom_theme_check.toggled.connect(self.on_custom_theme_toggled)
+        layout.addWidget(self.custom_theme_check)
+
+        self.custom_theme_widget = QWidget()
+        custom_row = QHBoxLayout(self.custom_theme_widget)
+        custom_row.setContentsMargins(0, 0, 0, 0)
+
+        self._custom_bg_color = QColor(20, 20, 20, 255)
+        self._custom_border_color = QColor("#FFAA00")
+        self._custom_text_color = QColor("#FFFFFF")
+
+        custom_row.addWidget(QLabel("Фон:"))
+        self.custom_bg_btn = QPushButton()
+        self.custom_bg_btn.clicked.connect(self.pick_custom_bg)
+        custom_row.addWidget(self.custom_bg_btn)
+
+        bg_opacity_row, self.custom_bg_opacity_spin = _build_stepper_row(
+            "Непрозорість фону, %:", 0, 100, round(self._custom_bg_color.alpha() / 255 * 100)
+        )
+        self.custom_bg_opacity_spin.setToolTip(
+            "100% — суцільний фон без прозорості (безпечний варіант за замовчуванням).\n"
+            "0% — повністю прозорий фон.\n"
+            "Щоб прозорий фон коректно захоплювався старими програмами запису, "
+            "увімкніть \"Суцільний фон замість прозорого\" на вкладці \"Сумісність\" — "
+            "інакше можливі артефакти захоплення (не всі capture-методи вміють знімати "
+            "напівпрозорі вікна)."
+        )
+        self.custom_bg_opacity_spin.valueChanged.connect(self.on_custom_bg_opacity_changed)
+        custom_row.addLayout(bg_opacity_row)
+
+        custom_row.addWidget(QLabel("Рамка:"))
+        self.custom_border_btn = QPushButton()
+        self.custom_border_btn.clicked.connect(self.pick_custom_border)
+        custom_row.addWidget(self.custom_border_btn)
+
+        custom_row.addWidget(QLabel("Текст:"))
+        self.custom_text_btn = QPushButton()
+        self.custom_text_btn.clicked.connect(self.pick_custom_text)
+        custom_row.addWidget(self.custom_text_btn)
+
+        custom_row.addWidget(QLabel("Шрифт:"))
+        self.custom_font_combo = QComboBox()
+        self.custom_font_combo.addItems(STANDARD_WINDOWS_FONTS)
+        self.custom_font_combo.currentIndexChanged.connect(self.on_custom_font_changed)
+        custom_row.addWidget(self.custom_font_combo)
+
+        custom_row.addWidget(QLabel("Форма:"))
+        self.custom_shape_combo = QComboBox()
+        for key, label in SHAPE_LABELS.items():
+            self.custom_shape_combo.addItem(label, key)
+        self.custom_shape_combo.currentIndexChanged.connect(self.on_custom_shape_changed)
+        custom_row.addWidget(self.custom_shape_combo)
+        custom_row.addStretch(1)
+
+        self._update_custom_swatch(self.custom_bg_btn, self._custom_bg_color)
+        self._update_custom_swatch(self.custom_border_btn, self._custom_border_color)
+        self._update_custom_swatch(self.custom_text_btn, self._custom_text_color)
+
+        self.custom_theme_widget.setVisible(False)
+        layout.addWidget(self.custom_theme_widget)
 
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("Заголовок:"))
@@ -558,6 +723,20 @@ class ControlPanel(QWidget):
         self.show_title_check.setChecked(True)
         self.show_title_check.toggled.connect(self.on_show_title_changed)
         row2.addWidget(self.show_title_check)
+
+        self.show_elo_check = QCheckBox("Показувати ELO")
+        self.show_elo_check.setChecked(True)
+        self.show_elo_check.setToolTip("Прибирає ELO з оверлею у всіх гравців одразу.")
+        self.show_elo_check.toggled.connect(self.on_show_elo_changed)
+        row2.addWidget(self.show_elo_check)
+
+        self.show_score_check = QCheckBox("Показувати рахунок")
+        self.show_score_check.setChecked(True)
+        self.show_score_check.setToolTip(
+            "Ховає загальний рахунок команд і особистий рахунок гравців у FFA."
+        )
+        self.show_score_check.toggled.connect(self.on_show_score_changed)
+        row2.addWidget(self.show_score_check)
 
         self.always_on_top_check = QCheckBox("Поверх усіх вікон")
         self.always_on_top_check.setToolTip(
@@ -600,39 +779,49 @@ class ControlPanel(QWidget):
 
     def _build_font_group(self) -> QGroupBox:
         box = QGroupBox("Шрифти")
-        layout = QHBoxLayout(box)
+        layout = QVBoxLayout(box)
 
-        score_row, self.score_font_spin = _build_stepper_row("Рахунок:", 10, 48, 20)
+        score_row, self.score_font_spin = _build_slider_row("Рахунок:", 10, 48, 20)
         self.score_font_spin.valueChanged.connect(self.on_score_font_changed)
         layout.addLayout(score_row)
 
-        name_row, self.name_font_spin = _build_stepper_row("Ніки:", 8, 24, 11)
+        name_row, self.name_font_spin = _build_slider_row("Ніки:", 8, 24, 11)
         self.name_font_spin.valueChanged.connect(self.on_name_font_changed)
         layout.addLayout(name_row)
 
-        title_row, self.title_font_spin = _build_stepper_row("Заголовок:", 8, 36, 11)
+        title_row, self.title_font_spin = _build_slider_row("Заголовок:", 8, 36, 11)
         self.title_font_spin.valueChanged.connect(self.on_title_font_changed)
         layout.addLayout(title_row)
 
-        elo_row, self.elo_font_spin = _build_stepper_row("ELO:", 8, 24, 13)
+        elo_row, self.elo_font_spin = _build_slider_row("ELO:", 8, 24, 13)
         self.elo_font_spin.valueChanged.connect(self.on_elo_font_changed)
         layout.addLayout(elo_row)
-        layout.addStretch(1)
         return box
 
     def _build_spacing_group(self) -> QGroupBox:
         box = QGroupBox("Відступи")
-        layout = QHBoxLayout(box)
+        layout = QVBoxLayout(box)
 
-        spacing_row, self.row_spacing_spin = _build_stepper_row("Між ніками:", 0, 16, 4)
+        spacing_row, self.row_spacing_spin = _build_slider_row("Між ніками:", 0, 16, 4)
         self.row_spacing_spin.valueChanged.connect(self.on_row_spacing_changed)
         layout.addLayout(spacing_row)
 
-        padding_row, self.panel_padding_spin = _build_stepper_row("Рамка до ніків:", 0, 20, 6)
+        padding_row, self.panel_padding_spin = _build_slider_row("Рамка до ніків:", 0, 20, 6)
         self.panel_padding_spin.valueChanged.connect(self.on_panel_padding_changed)
         layout.addLayout(padding_row)
-        layout.addStretch(1)
+
+        spread_row, self.team_spread_spin = _build_slider_row("Розсунути команди, px:", 0, 400, 0)
+        self.team_spread_spin.setToolTip(
+            "Розсуває панелі команд від центру до країв екрана (лише командний режим). "
+            "Рахунок і заголовок лишаються по центру."
+        )
+        self.team_spread_spin.valueChanged.connect(self.on_team_spread_changed)
+        layout.addLayout(spread_row)
         return box
+
+    def on_team_spread_changed(self, value: int):
+        self.scorebar.set_team_spread(value)
+        self.autosave()
 
     def on_score_font_changed(self, value: int):
         self.scorebar.set_score_font_size(value)
@@ -652,6 +841,10 @@ class ControlPanel(QWidget):
 
     def on_color_style_changed(self):
         self.scorebar.set_color_style(self.color_style_combo.currentData())
+        self.autosave()
+
+    def on_marker_glow_changed(self, value: int):
+        self.scorebar.set_marker_glow(value)
         self.autosave()
 
     def on_row_spacing_changed(self, value: int):
@@ -822,7 +1015,7 @@ class ControlPanel(QWidget):
 
         spin = QSpinBox()
         spin.setRange(0, 999)
-        _button_only_spin(spin)
+        _configure_spin(spin)
 
         minus_btn = QPushButton("-")
         minus_btn.setFixedWidth(24)
@@ -854,12 +1047,23 @@ class ControlPanel(QWidget):
         toggle_btn.clicked.connect(self.scorebar.toggle_visibility)
         reset_btn = QPushButton("Скинути рахунок")
         reset_btn.clicked.connect(self.reset_scores)
+
+        for w in (toggle_btn, reset_btn):
+            layout.addWidget(w)
+        return box
+
+    def _build_config_group(self) -> QGroupBox:
+        box = QGroupBox("Конфіг")
+        layout = QHBoxLayout(box)
+
         save_btn = QPushButton("Зберегти конфіг")
         save_btn.clicked.connect(self.save_config)
         load_btn = QPushButton("Завантажити конфіг")
         load_btn.clicked.connect(self.load_config)
+        reset_config_btn = QPushButton("Скинути конфіг")
+        reset_config_btn.clicked.connect(self.reset_config)
 
-        for w in (toggle_btn, reset_btn, save_btn, load_btn):
+        for w in (save_btn, load_btn, reset_config_btn):
             layout.addWidget(w)
         return box
 
@@ -985,9 +1189,94 @@ class ControlPanel(QWidget):
         theme = get_theme(self.theme_combo.currentData() or "cnc")
         self.setStyleSheet(control_panel_qss(theme))
 
+    @staticmethod
+    def _color_to_rgba(color: QColor) -> str:
+        return f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()})"
+
+    @staticmethod
+    def _update_custom_swatch(button: QPushButton, color: QColor):
+        """Показує реальну прозорість у превʼю (rgba у фоні кнопки), а не
+        завжди суцільний колір — інакше не видно, чи прозорість взагалі
+        застосувалась."""
+        button.setText(color.name())
+        text_color = "#000000" if color.lightnessF() > 0.5 else "#FFFFFF"
+        rgba = f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alphaF():.3f})"
+        button.setStyleSheet(f"background-color: {rgba}; color: {text_color}; border: 1px solid #888;")
+
+    def on_custom_theme_toggled(self, checked: bool):
+        self.theme_combo.setEnabled(not checked)
+        self.custom_theme_widget.setVisible(checked)
+        if checked:
+            self.apply_custom_theme()
+        else:
+            self.scorebar.set_theme(self.theme_combo.currentData())
+        self.autosave()
+
+    def apply_custom_theme(self):
+        base = get_theme(self.theme_combo.currentData() or "cnc")
+        theme = build_custom_theme(
+            base,
+            bg=self._color_to_rgba(self._custom_bg_color),
+            border=self._custom_border_color.name(),
+            text=self._custom_text_color.name(),
+            font_family=self.custom_font_combo.currentText(),
+            shape=self.custom_shape_combo.currentData(),
+        )
+        self.scorebar.set_custom_theme(theme)
+
+    def pick_custom_bg(self):
+        color = QColorDialog.getColor(
+            self._custom_bg_color, self, "Колір фону", QColorDialog.ColorDialogOption.ShowAlphaChannel
+        )
+        if not color.isValid():
+            return
+        self._custom_bg_color = color
+        self.custom_bg_opacity_spin.blockSignals(True)
+        self.custom_bg_opacity_spin.setValue(round(color.alpha() / 255 * 100))
+        self.custom_bg_opacity_spin.blockSignals(False)
+        self._update_custom_swatch(self.custom_bg_btn, color)
+        self.apply_custom_theme()
+        self.autosave()
+
+    def on_custom_bg_opacity_changed(self, value: int):
+        self._custom_bg_color.setAlpha(round(value / 100 * 255))
+        self._update_custom_swatch(self.custom_bg_btn, self._custom_bg_color)
+        self.apply_custom_theme()
+        self.autosave()
+
+    def pick_custom_border(self):
+        color = QColorDialog.getColor(self._custom_border_color, self, "Колір рамки")
+        if not color.isValid():
+            return
+        self._custom_border_color = color
+        self._update_custom_swatch(self.custom_border_btn, color)
+        self.apply_custom_theme()
+        self.autosave()
+
+    def pick_custom_text(self):
+        color = QColorDialog.getColor(self._custom_text_color, self, "Колір тексту")
+        if not color.isValid():
+            return
+        self._custom_text_color = color
+        self._update_custom_swatch(self.custom_text_btn, color)
+        self.apply_custom_theme()
+        self.autosave()
+
+    def on_custom_font_changed(self):
+        self.apply_custom_theme()
+        self.autosave()
+
+    def on_custom_shape_changed(self):
+        self.apply_custom_theme()
+        self.autosave()
+
     def on_icon_variant_changed(self):
         variant = self.icon_variant_combo.currentData()
         self.scorebar.set_icon_variant(variant)
+        self.autosave()
+
+    def on_icon_size_changed(self, value: int):
+        self.scorebar.set_icon_size(value)
         self.autosave()
 
     def on_always_on_top_changed(self, checked: bool):
@@ -1002,6 +1291,14 @@ class ControlPanel(QWidget):
         self.scorebar.set_title_visible(checked)
         self.autosave()
 
+    def on_show_elo_changed(self, checked: bool):
+        self.scorebar.set_elo_visible(checked)
+        self.autosave()
+
+    def on_show_score_changed(self, checked: bool):
+        self.scorebar.set_score_visible(checked)
+        self.autosave()
+
     # ------------------------------------------------------------------
     def _build_config_dict(self) -> dict:
         return {
@@ -1011,16 +1308,27 @@ class ControlPanel(QWidget):
             "map_name": self.map_edit.text(),
             "theme": self.theme_combo.currentData(),
             "icon_variant": self.icon_variant_combo.currentData(),
+            "custom_theme_enabled": self.custom_theme_check.isChecked(),
+            "custom_bg": self._color_to_rgba(self._custom_bg_color),
+            "custom_border": self._custom_border_color.name(),
+            "custom_text": self._custom_text_color.name(),
+            "custom_font": self.custom_font_combo.currentText(),
+            "custom_shape": self.custom_shape_combo.currentData(),
+            "icon_size": self.icon_size_spin.value(),
             "always_on_top": self.always_on_top_check.isChecked(),
             "title": self.title_edit.text(),
             "show_title": self.show_title_check.isChecked(),
+            "show_elo": self.show_elo_check.isChecked(),
+            "show_score": self.show_score_check.isChecked(),
             "score_font_size": self.score_font_spin.value(),
             "name_font_size": self.name_font_spin.value(),
             "title_font_size": self.title_font_spin.value(),
             "elo_font_size": self.elo_font_spin.value(),
             "row_spacing": self.row_spacing_spin.value(),
             "panel_padding": self.panel_padding_spin.value(),
+            "team_spread": self.team_spread_spin.value(),
             "color_style": self.color_style_combo.currentData(),
+            "marker_glow": self.marker_glow_spin.value(),
             "solid_bg": self.solid_bg_check.isChecked(),
             "solid_bg_color": self.solid_bg_color_combo.currentData(),
             "disable_glow": self.disable_glow_check.isChecked(),
@@ -1052,6 +1360,30 @@ class ControlPanel(QWidget):
             if idx >= 0:
                 self.icon_variant_combo.setCurrentIndex(idx)
 
+        self._custom_bg_color = parse_color(data.get("custom_bg", "rgba(20, 20, 20, 255)"))
+        self._custom_border_color = parse_color(data.get("custom_border", "#FFAA00"))
+        self._custom_text_color = parse_color(data.get("custom_text", "#FFFFFF"))
+        self.custom_bg_opacity_spin.blockSignals(True)
+        self.custom_bg_opacity_spin.setValue(round(self._custom_bg_color.alpha() / 255 * 100))
+        self.custom_bg_opacity_spin.blockSignals(False)
+        self._update_custom_swatch(self.custom_bg_btn, self._custom_bg_color)
+        self._update_custom_swatch(self.custom_border_btn, self._custom_border_color)
+        self._update_custom_swatch(self.custom_text_btn, self._custom_text_color)
+
+        font_idx = self.custom_font_combo.findText(data.get("custom_font", "Segoe UI"))
+        if font_idx >= 0:
+            self.custom_font_combo.setCurrentIndex(font_idx)
+
+        shape_idx = self.custom_shape_combo.findData(data.get("custom_shape", "notch"))
+        if shape_idx >= 0:
+            self.custom_shape_combo.setCurrentIndex(shape_idx)
+
+        # Після кольорів/шрифту/форми — checkbox сам застосує власну тему
+        # через on_custom_theme_toggled, якщо custom_theme_enabled True.
+        self.custom_theme_check.setChecked(bool(data.get("custom_theme_enabled", False)))
+
+        self.icon_size_spin.setValue(data.get("icon_size", 38))
+
         self.always_on_top_check.setChecked(bool(data.get("always_on_top", False)))
 
         self.title_edit.setText(data.get("title", "SCOREBAR"))
@@ -1060,18 +1392,30 @@ class ControlPanel(QWidget):
         self.show_title_check.setChecked(show_title)
         self.scorebar.set_title_visible(show_title)
 
+        show_elo = bool(data.get("show_elo", True))
+        self.show_elo_check.setChecked(show_elo)
+        self.scorebar.set_elo_visible(show_elo)
+
+        show_score = bool(data.get("show_score", True))
+        self.show_score_check.setChecked(show_score)
+        self.scorebar.set_score_visible(show_score)
+
         self.score_font_spin.setValue(data.get("score_font_size", 20))
         self.name_font_spin.setValue(data.get("name_font_size", 11))
         self.title_font_spin.setValue(data.get("title_font_size", 11))
         self.elo_font_spin.setValue(data.get("elo_font_size", 13))
         self.row_spacing_spin.setValue(data.get("row_spacing", 4))
         self.panel_padding_spin.setValue(data.get("panel_padding", 6))
+        self.team_spread_spin.setValue(data.get("team_spread", 0))
 
         color_style = data.get("color_style", "triangle")
         idx = self.color_style_combo.findData(color_style)
         if idx >= 0:
             self.color_style_combo.setCurrentIndex(idx)
         self.scorebar.set_color_style(color_style)
+
+        self.marker_glow_spin.setValue(data.get("marker_glow", 0))
+        self.scorebar.set_marker_glow(self.marker_glow_spin.value())
 
         bg_color_key = data.get("solid_bg_color", "black")
         idx = self.solid_bg_color_combo.findData(bg_color_key)
@@ -1148,6 +1492,22 @@ class ControlPanel(QWidget):
             QMessageBox.warning(self, "Помилка", f"Не вдалося прочитати файл: {exc}")
             return
         self._apply_config_dict(data)
+        self.autosave()
+
+    def reset_config(self):
+        """Скидає всі налаштування до зводських значень (див. дефолти в
+        _apply_config_dict) і одразу зберігає скинутий стан у CONFIG_PATH."""
+        answer = QMessageBox.question(
+            self,
+            "Скинути конфіг",
+            "Скинути всі налаштування до зводських значень? Поточний рахунок, "
+            "гравців і вигляд буде втрачено.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._apply_config_dict({})
         self.autosave()
 
 
