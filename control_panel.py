@@ -237,6 +237,10 @@ def build_country_combo() -> QComboBox:
         pixmap = QPixmap(str(country.flag_path))
         icon = QIcon(pixmap) if not pixmap.isNull() else QIcon()
         combo.addItem(icon, country.name, country.code)
+    # Сам комбобокс має фіксовану ширину (див. PlayerEditRow), а от
+    # випадний список — під найдовшу назву країни, щоб її було видно повністю.
+    view = combo.view()
+    view.setMinimumWidth(view.sizeHintForColumn(0) + view.verticalScrollBar().sizeHint().width() + 8)
     return combo
 
 
@@ -331,6 +335,12 @@ class PlayerEditRow(QWidget):
 
     changed = pyqtSignal()
 
+    PLAYER_COMBO_WIDTH = 140
+    NAME_EDIT_WIDTH = 300
+    ELO_EDIT_WIDTH = 64
+    COUNTRY_COMBO_WIDTH = 170
+    FACTION_COMBO_WIDTH = 140
+
     def __init__(self, fixed_team: int | None, show_score: bool = True, parent=None):
         super().__init__(parent)
         self.fixed_team = fixed_team
@@ -344,8 +354,9 @@ class PlayerEditRow(QWidget):
         # Вибір гравця зі списку cnc-general-ukraine.org (дивізіон + ELO
         # підставляються автоматично) або "Вручну" — тоді ім'я вводиться
         # текстовим полем нижче як завжди.
-        # Без фіксованих максимальних ширин: поля еластичні (stretch-фактори
-        # при додаванні в layout нижче), тож рядок розтягується разом з вікном.
+        # Ширини полів рядка фіксовані (PLAYER_COMBO_WIDTH тощо нижче), тож
+        # рядок не міняється при масштабуванні вікна — якщо вікно вужче за
+        # рядок, у списку гравців з'являється горизонтальний скрол.
         self.player_combo = QComboBox()
         self.player_combo.addItem("— Вручну —", None)
         self.name_edit = QLineEdit("Player")
@@ -379,17 +390,26 @@ class PlayerEditRow(QWidget):
         minus_btn.clicked.connect(lambda: self.score_spin.setValue(max(0, self.score_spin.value() - 1)))
         plus_btn.clicked.connect(lambda: self.score_spin.setValue(self.score_spin.value() + 1))
 
-        layout.addWidget(self.player_combo, 2)
-        layout.addWidget(self.name_edit, 2)
+        self.player_combo.setFixedWidth(self.PLAYER_COMBO_WIDTH)
+        self.name_edit.setFixedWidth(self.NAME_EDIT_WIDTH)
+        self.elo_edit.setFixedWidth(self.ELO_EDIT_WIDTH)
+        self.country_combo.setFixedWidth(self.COUNTRY_COMBO_WIDTH)
+        self.faction_combo.setFixedWidth(self.FACTION_COMBO_WIDTH)
+
+        layout.addWidget(self.player_combo)
+        layout.addWidget(self.name_edit)
         layout.addWidget(self.elo_edit)
         layout.addWidget(self.hide_elo_check)
-        layout.addWidget(self.country_combo, 2)
-        layout.addWidget(self.faction_combo, 2)
+        layout.addWidget(self.country_combo)
+        layout.addWidget(self.faction_combo)
         layout.addWidget(self.color_combo)
         if show_score:
             layout.addWidget(minus_btn)
             layout.addWidget(self.score_spin)
             layout.addWidget(plus_btn)
+        # Решта ширини (якщо вікно ширше за рядок) — порожня справа, поля
+        # не розтягуються.
+        layout.addStretch(1)
 
         self.player_combo.currentIndexChanged.connect(self.on_player_combo_changed)
         self.name_edit.textChanged.connect(self.changed.emit)
@@ -472,7 +492,9 @@ class ControlPanel(QWidget):
         super().__init__()
         self.scorebar = scorebar
         self.setWindowTitle("Scorebar — панель керування")
-        self.resize(860, 800)
+        # Ширина — під рядок гравця FFA (поля рядка фіксованої ширини), щоб
+        # при старті не було горизонтального скролу.
+        self.resize(1160, 800)
 
         self.player_rows: list[PlayerEditRow] = []
         self.remote_players: list[dict] = []
@@ -957,9 +979,9 @@ class ControlPanel(QWidget):
         self.players_scroll = QScrollArea()
         self.players_scroll.setWidgetResizable(True)
         self.players_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        # Горизонтального скролу немає: рядки гравців розтягуються рівно на
-        # ширину вікна (поля рядка мають еластичну ширину).
-        self.players_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Поля рядка гравця мають фіксовану ширину — якщо вікно вужче за
+        # рядок, з'являється горизонтальний скрол замість стискання полів.
+        self.players_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.players_scroll.setMinimumHeight(160)
         self.players_container = QWidget()
         container_layout = QVBoxLayout(self.players_container)

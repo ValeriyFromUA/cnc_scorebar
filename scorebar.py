@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from data import Faction, MatchState, Player, get_country, get_faction, get_player_color_hex
+from data import NO_FLAG_CODE, Faction, MatchState, Player, get_country, get_faction, get_player_color_hex
 from themes import Theme, get_default_icon_variant, get_theme
 
 
@@ -672,6 +672,9 @@ class PlayerRow(QWidget):
 
     def set_score_visible(self, visible: bool):
         self.score_label.setVisible(visible)
+
+    def set_flag_visible(self, visible: bool):
+        self.flag_label.setVisible(visible)
 
     def set_color_style(self, style: str):
         self.color_style = style
@@ -1378,6 +1381,7 @@ class ScorebarWindow(QWidget):
             self.center_panel.update_state(self.state)
 
         self._apply_name_widths()
+        self._apply_flag_visibility()
 
         # Перемикання team/FFA ховає/показує цілі панелі — інвалідація
         # скидає layout-кеш, а SetFixedSize на кореневому layout сам підганяє
@@ -1388,6 +1392,19 @@ class ScorebarWindow(QWidget):
         self.layout().activate()
         self.reposition()
         self._update_solid_mask()
+
+    def _apply_flag_visibility(self):
+        """Якщо в УСІХ гравців вибрано "Без прапора" — ховаємо колонку
+        прапора в усіх рядках, щоб не лишався порожній проміжок. Якщо хоч
+        в одного прапор є — колонка видима в усіх (порожня в тих, хто без
+        прапора), щоб ніки лишались вирівняними між рядками і командами."""
+        show = any(p.country_code != NO_FLAG_CODE for p in self.state.players)
+        if self.state.ffa:
+            rows = self.ffa_panel.rows
+        else:
+            rows = self.left_panel.rows + self.right_panel.rows
+        for row in rows:
+            row.set_flag_visible(show)
 
     def _apply_name_widths(self):
         """Ширина поля ніка динамічна: підганяється під найдовший нік серед
